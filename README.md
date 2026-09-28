@@ -1,77 +1,79 @@
-# MEXC × DEX Arbitrage Monitor — эволюция V1→V6
+# MEXC × DEX Arbitrage Monitor
 
-Асинхронный монитор арбитражных возможностей между **MEXC** (mid + order book) и on-chain **DEX** (Uniswap, PancakeSwap, Aerodrome и др.), включая режим **DEX↔DEX** (cross-DEX и multi-hop цепочки).
+**Asynchronous monitor for cross-market and cross-DEX arbitrage opportunities.**
 
-Проект прошёл шесть итераций за неделю активной разработки (25–29 июля 2026).
-Каждая версия — самодостаточный снимок проекта с собственным README, тестами и конфигом.
-Актуальная версия — **V6**.
+The repository documents an iterative V1 → V6 development path. The current version is **V6**.
 
-> ⚠️ По умолчанию проект работает **только как мониторинг**: сигналы, LIVE-радар, метрики и веб-дашборд.
-> Исполнение сделок включается только при наличии `DEX_PRIVATE_KEY` (и даже тогда по умолчанию `EXECUTION_DRY_RUN=1`).
+> Default mode is monitoring only. Trade execution is opt-in and defaults to dry-run.
 
-## Карточка эволюции
+## What it does
 
-| Версия | Дата | Что нового |
-|--------|------|-----------|
-| **V1** | 25–26 июля | Первая рабочая версия: MEXC token list → DEX pool discovery → on-chain симуляция свопа → расчёт чистой прибыли → сигнал. Сети: Ethereum, BSC, Polygon, Arbitrum, Robinhood Chain. Направление DEX_BUY_MEXC_SELL. Веб-дашборд и GUI-черновик |
-| **V2** | 26–27 июля | Стабилизация «боевого» режима: Alt-CEX клиент и отдельная вкладка дашборда, MEXC-first сканирование, AMM-версии, закрытие пулов (closing_pools), адаптер Uniswap V1. Большая ревизия по плану ревью D1–D18: fail-closed decimals, canonical-реестр адресов токенов, direction-aware фильтры сигналов, circuit breaker на RPC, blacklist мёртвых пулов, карантин логов с ключами |
-| **V3** | 27–28 июля | Применён план ревью v3.0 (Qwen): ликвидированы утечки ключей в логи (все засвеченные ключи отозваны), описание сетей вынесено в `config/networks.py`, README переписан. Версия-«фикс» без новых фич — 2 изменённых файла относительно V2 |
-| **V4** | 28 июля | Ops-панель (`ops.html`): статус обновления пулов и источников в реальном времени (`refresh_status.py`). Юнит-тесты сервиса метаданных токенов |
-| **V5** | 28–29 июля | Режим **DEX↔DEX**: cross-DEX по одному pair и multi-hop цепочки (`dex_dex_universe`, `dex_dex_store`, `scan_mode`, вкладка `dex_dex.html`), hot-pools кэш. Интеграция сабграфов PancakeSwap V3/StableSwap в discovery |
-| **V6** | 29 июля | Максимально проработанная версия: size sweep (подбор оптимального размера сделки), кэш резервов V2 (multicall), PCS price API и бенчмарки sidecar-сканера, аудит реального PnL (`tools/audit_pnl_real.py`), паритет PnL вотчера. 40 тест-файлов |
+- discovers token/pool opportunities across MEXC and on-chain DEXs;
+- obtains on-chain swap quotes;
+- accounts for fees and slippage;
+- sweeps trade sizes to find the better-sized opportunity;
+- produces signals and watches them over time;
+- supports cross-DEX and multi-hop scans;
+- exposes a web dashboard and operational status.
 
-## Схема сканирования (V6)
+## Architecture
 
 ```
-MEXC token list + subgraphs → pool discovery → on-chain quote (V2/V3/…)
-→ size sweep → fees & slippage → net profit → signal → watcher → dashboard
+market/token sources
+      ↓
+pool discovery
+      ↓
+on-chain quotes
+      ↓
+fees + slippage + size sweep
+      ↓
+net profitability
+      ↓
+signal / watcher
+      ↓
+web dashboard
 ```
 
-| Направление | Описание |
-|-------------|----------|
-| **A · DEX_BUY_MEXC_SELL** | Купить токен на DEX → продать на MEXC |
-| **B · MEXC_BUY_DEX_SELL** | Купить на MEXC → вывести → продать на DEX (+ closing hop WBNB/WETH → USDT) |
-| **Cross-DEX** | Один pair на двух DEX одной сети |
-| **Chain** | Multi-hop маршруты до `CHAIN_MAX_HOPS` |
+## Engineering highlights
 
-## Структура репозитория
+**Multiple market models.** Supports CEX order-book data and AMM-style DEX pricing.
 
-```
-V1/ … V6/   — снимки версий (V6 — актуальная)
-```
+**Size matters.** The monitor does not treat the displayed price as the trade result; it checks different trade sizes and incorporates execution costs.
 
-Внутри каждой версии — самостоятельный Python-проект (Python 3.12):
-`main.py`, `scanner/`, `discovery/`, `clients/`, `execution/`, `services/`,
-`security/`, `dashboard/`, `tests/`, `docs/` (планы и спецификации),
-`README.md`, `STATE.md`, `DECISIONS.md`, `.env.example`.
+**Fail-closed behaviour.** Configuration and numeric metadata are validated before a signal is trusted.
 
-## Запуск V6
+**Operational safety.** Circuit breakers, blacklists and dry-run defaults reduce the chance that an operational problem becomes a live trade.
+
+## Current scope
+
+V6 covers MEXC↔DEX, DEX↔DEX, cross-DEX and multi-hop monitoring. The repository contains dedicated versions, review notes and tests so the evolution of the system can be inspected rather than inferred from a single final snapshot.
+
+## Stack
+
+Python 3.12 · async IO · Web3/EVM · MEXC API · Uniswap/PancakeSwap/Aerodrome · pytest · web dashboard
+
+## Tests
+
+The V6 snapshot contains **40 test files**. Earlier versions have their own test suites.
+
+## Security notes
+
+Credentials are supplied through environment variables and excluded from the repository. Historical development credentials were revoked and redacted; the current repository does not contain live keys.
+
+## Local run
 
 ```bash
 cd V6
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python -m venv .venv
+# Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env                                # заполнить ключи
-python main.py                                      # только мониторинг
-python run_dashboard.py                             # веб-дашборд
+python main.py
 ```
 
-Подробности конфигурации — в `V6/README.md` (раздел «Конфигурация (env)»).
+## Limitations
 
-## Безопасность
+This is a monitoring/research project, not a guaranteed profitable trading system. Execution depends on network conditions, liquidity, fees, latency and external APIs. Signals are estimates and can become stale.
 
-- Все `.env`, логи запусков, кэши и данные сканов **исключены из репозитория**;
-  в истории нет ключей MEXC, Alchemy, Infura, DRPC и The Graph.
-- Упоминания отозванных ключей в исторических отчётах (V1/V2, планы ревью)
-  заменены на `ALCHEMY_KEY_1_REDACTED` / `ALCHEMY_KEY_2_REDACTED`.
-- Компрометированные в процессе разработки ключи были **отозваны** ещё на этапе V3
-  (см. `V3/STATE.md`), поэтому в актуальном коде их нет.
-- Реальные значения задаются через локальный `.env` (из `.env.example`).
+## AI-assisted development
 
-## Тесты
-
-Каждая версия несёт свои тесты (`pytest`), от 24 файлов в V1 до 40 в V6:
-
-```bash
-cd V6 && pytest tests -q
-```
+AI was used for implementation drafts, routine modules and test ideas. I owned the decomposition, architecture, review decisions, debugging, validation and final behaviour.
