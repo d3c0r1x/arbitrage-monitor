@@ -1,0 +1,469 @@
+# РЕВЬЮ-ПЛАН v3.0 — MEXC × DEX Arbitrage Monitor
+
+**Дата:** 27 июля 2026  
+**Корень кода:** `Qwen 26.07.2026 7.26/`  
+**Основание:** v2.0 + live-сверка кода, `pools_cache.json` (3296 пулов), `signals.jsonl`, `.run/bot_stdout.log`, `STATE.md`  
+**Важно:** `STATE.md` «Full Fix Plan — COMPLETE» = другой ревью (A1–G6 / gas D1–D2). **Этот план (D1–D18) НЕ закрыт.**
+
+---
+
+## Часть 0. Caveman-ревью плана v2 vs код
+
+`план:L14-15`: 🔴 bug: D1/D2 описаны как data-баг, в кэше USDC/USDT уже 6. Фиксить код-дефолт 18 + fail-closed в `token_meta_service`, не новый сервис.  
+`план:L16`: 🔴 bug: D3 жив — `main.py:119` хардкод 500; `config/rate_limits.py` мёртвый.  
+`план:L660`: 🔴 bug: путь `execution/dex_executor.py` неверен → `execution/executor.py`. Multihop всё ещё `min_out=1`.  
+`план:L55-59`: 🔴 bug: ключи в `.env` не ротированы; `mask_url` есть, никто не вызывает; httpx логирует полный Alchemy URL.  
+`план:L130`: 🟡 risk: новый `decimals_service` дублирует `services/token_meta_service.py` + Multicall.  
+`план:L814`: 🟡 risk: новый `monitoring.py` дублирует `metrics/health.py`.  
+`план:L16-19`: 🟡 risk: D6/ASS — Gate «reject ASS deposit_closed» неверен: direction B + `withdraw=True` легитимен.  
+`план:L17`: ❓ q: BAT «fake» адрес `…2887ef` = canonical ETH BAT. Перепроверить claim перед whitelist reject.  
+`план:L563`: 🔵 nit: circuit breaker — сначала усилить `AdaptiveConcurrencyController`, не параллельный CB без интеграции.  
+`STATE.md:L1-19`: 🟡 risk: нумерация D1/D2 = gas, конфликт с планом decimals. Переименовать ID в STATE или в плане.
+
+---
+
+## Часть I. Диагноз (актуализация)
+
+### Статус дефектов v2
+
+| # | Дефект | Статус | Файл:строка | Критичность |
+|---|--------|--------|-------------|-------------|
+| D1 | Дефолт decimals=18 при miss | **КОД ЖИВ** / кэш USDT·USDC OK | `scanner.py:245-246`, `token_meta_service.py:60-61` | **КРИТ** |
+| D2 | token_decimals=18 на miss | **КОД ЖИВ** / XAUT в кэше нет | `chain_engine.py:74-75`, `pool_refresh_task.py:496-497` | **КРИТ** |
+| D3 | Rate limit 500 + unused config | **ЖИВ** | `main.py:119`, `rate_limits.py:31-37` | **КРИТ** |
+| D4 | Нет address-whitelist | **ЖИВ** (BAT claim уточнить) | нет модуля | **ВЫСОК** |
+| D5 | Пустой `pool_version` пишется/сканируется | **ЖИВ** — 818/3296 пустых | `pool_refresh_task.py:387,519`, `scanner.py:235` | **ВЫСОК** |
+| D6 | Deposit/withdraw gating | **ЧАСТИЧНО** — default True на NULL | `scanner.py:248-253`, `pool_refresh_task.py:532-537` | **ВЫСОК** |
+| D7 | `min_out=1` multihop | **ЖИВ** (single-hop fixed) | `executor.py:210-211,458-481` | **ВЫСОК** |
+| D8 | `WATCHER_EXPIRY_SEC=300` fixed | **ЖИВ** | `settings.py:246-248`, `signal_watcher.py:200` | **СРЕДН** |
+| D9 | Fee fallback ETH $5 | **УЛУЧШЕН** (есть real gas + log) | `fee_service.py:23-28,144-187` | **СРЕДН** |
+| D10 | Discovery unhealthy → cache-only | **ЧАСТИЧНО** (есть onchain fallback) | `source_manager.py:83-169` | **СРЕДН** |
+| D11 | ETH/POLY/ROBINHOOD активны | **ЖИВ** — нет `ACTIVE_NETWORKS` | `networks.py:26-75` | **НИЗК→ВЫСОК*** |
+| D12 | Ключи в логах / .env | **ЖИВ** | `.env`, `.run/bot_stdout.log`, `logging.py:50` unused | **КРИТ** |
+
+\*D11 поднят: лишние сети жгут Alchemy CU → усиливают D3/429.
+
+### Новые дефекты (v3)
+
+| # | Дефект | Файл | Подтверждение | Критичность |
+|---|--------|------|---------------|-------------|
+| D13 | `mask_url` мёртвый код | `utils/logging.py` | grep: только definition | **КРИТ** |
+| D14 | Нет max-profit filter | `scanner/scanner.py` | signals: SHIB 21k%, ASSET ~14M% | **ВЫСОК** |
+| D15 | `RATE_LIMITS["rpc"]` не wired | `main.py` vs `rate_limits.py` | import отсутствует | **ВЫСОК** |
+| D16 | token_meta кэширует 18 при fail | `token_meta_service.py` | poison cache | **ВЫСОК** |
+| D17 | deposit/withdraw default True | `pool_refresh_task.py:532-537` | NULL join → пропускает | **СРЕДН** |
+| D18 | httpx/httpcore не заглушены | `utils/logging.py` | лог = URL+ключи | **ВЫСОК** |
+
+### Что уже есть (не изобретать заново)
+
+| Компонент | Путь | Использовать вместо |
+|-----------|------|---------------------|
+| Decimals / meta | `services/token_meta_service.py` | ❌ не создавать `decimals_service.py` |
+| Stablecoin registry | `config/stablecoins.py`, `services/stablecoin_registry_service.py` | расширить known decimals |
+| Security bytecode | `security/token_security_checker.py`, `pool_security_checker.py` | whitelist рядом / внутри |
+| Health/metrics | `metrics/health.py` | ❌ не создавать `monitoring.py` |
+| Rate limiter + adaptive | `utils/rate_limiter.py` | усилить, не игнорить |
+| Rate config | `config/rate_limits.py` | wire в `main.py`, снизить RPM |
+| Execution safety | `execution/safety.py` | align watcher expiry с `min_confirm` |
+| MEXC capital cache | `execution/mexc_executor.py:263-283` | уже есть (TTL 3600; опц. → 300) |
+| Single-hop slippage | `execution/executor.py:_fresh_min_out` | добить только multihop |
+| Pool detector | `dex/pool_detector.py` | уже wired; запретить persist empty |
+
+### Что работает (подтверждено)
+
+| Компонент | Статус |
+|-----------|--------|
+| Profit math V2/V3 | ✅ |
+| Direction A/B fee logic (STATE A1/A5) | ✅ |
+| Multicall3 + TokenMeta DI | ✅ |
+| RoundRobin / multi-key RPC | ✅ |
+| GUI + dashboard + `/health` | ✅ |
+| Unit tests 205 | ✅ (не покрывают D3/D5/D7/D12) |
+
+---
+
+## Часть II. Фазы исправления
+
+---
+
+### ФАЗА 0 — Безопасность и стабилизация (сегодня, 1–2 ч)
+
+**Цель:** остановить утечку ключей и сжигание CU на мёртвых сетях.
+
+#### 0.1 Ротация ключей + scrub логов
+
+**Файлы:** `.env`, архивы `data/*.log`, `.run/*`
+
+1. Alchemy Dashboard → revoke оба засвеченных ключа (`ALCHEMY_KEY_1_PREFIX…`, `ALCHEMY_KEY_2_REDACTED…`).
+2. Новые ключи: отдельно BSC, отдельно ARB.
+3. Переименовать/вынести старые логи с URL из workspace (считать secret-bearing).
+4. `.gitignore` уже должен закрывать `.env` / `.run/` — проверить.
+
+**Критерий:** `rg -F "ALCHEMY_KEY_1_PREFIX" .` и `rg -F "ALCHEMY_KEY_2_REDACTED" .` → пусто в tracked + активных логах.
+
+#### 0.2 Реально вызвать `mask_url` + заглушить httpx (D12, D13, D18)
+
+**Файл:** `utils/logging.py`, `clients/rpc_client.py`, `clients/http_client.py`
+
+```python
+# utils/logging.py — при setup_logging():
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("web3").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+# clients/rpc_client.py — любой log URL:
+logger.debug("rpc_call url=%s", mask_url(url))
+```
+
+**Критерий:** в новом логе нет `/v2/<api_key>`; за 17 мин лог < 5 МБ.
+
+#### 0.3 ACTIVE_NETWORKS = BSC + ARBITRUM (D11)
+
+**Файлы:** `config/networks.py`, `scanner/pool_refresh_task.py`, `main.py`
+
+```python
+ACTIVE_NETWORKS = frozenset({"BSC", "ARBITRUM"})
+
+def is_network_active(network: str) -> bool:
+    return network.upper() in ACTIVE_NETWORKS
+```
+
+Фильтровать: candidate tokens, pool refresh, scanner cycle, RPC factory.  
+DEX Registry / NETWORKS dict оставить (совместимость), но runtime только active.
+
+**Критерий:** 0 логов `A_reserves_call ETHEREUM|POLYGON|ROBINHOOD`.
+
+---
+
+### ФАЗА 1 — Критические баги сигнала (1–2 дня)
+
+**Цель:** фейковые/мусорные сигналы → 0. Переиспользовать существующие сервисы.
+
+#### 1.1 Harden decimals (D1, D2, D16) — НЕ новый файл
+
+**Файл:** `services/token_meta_service.py`
+
+1. Добавить `KNOWN_DECIMALS: dict[str, int]` (адреса lower) — USDC/USDT/WBTC/XAUT/WETH/WBNB и т.д.
+2. Приоритет: KNOWN → runtime cache → on-chain multicall.
+3. **Fail-closed:** при RPC miss/fail — **НЕ** писать 18 в кэш; raise / return None → skip pool.
+4. Лог `DECIMALS_MISMATCH` если cache ≠ chain → overwrite cache.
+
+**Файлы:** `scanner/scanner.py`, `scanner/chain_engine.py`
+
+```python
+# Убрать слепой default 18. Если decimals неизвестны — skip pool.
+stablecoin_decimals = pool.get("stablecoin_decimals")
+token_decimals = pool.get("token_decimals")
+if stablecoin_decimals is None or token_decimals is None:
+    logger.warning("decimals_missing: skip %s", pool_address)
+    return
+```
+
+**Файл:** `scanner/pool_refresh_task.py` — `_get_decimals` без silent 18.
+
+**Критерий:** нет новых записей с wrong decimals; unit test на fail-closed.
+
+#### 1.2 Token address verify (D4) — рядом с security
+
+**Файл:** новый `security/token_address_registry.py` (или секция в `stablecoin_registry`)
+
+Только для **известных** символов: адрес должен совпадать. Unknown symbol → pass.  
+Сначала верифицировать BAT claim на ETH (canonical = `0x0d8775…2887ef`). Не банить canonical.
+
+Wire в `scanner.process_pool` до quote + в pool refresh до persist.
+
+**Критерий:** поддельный контракт с известным ticker → `fake_token_rejected`; canonical BAT не режется.
+
+#### 1.3 Signal filters (D5, D6, D14, D17)
+
+**Файл:** новый `services/signal_filters.py` (тонкий слой — здесь уместен)
+
+```python
+MIN_QUOTE_RESERVE_USD = Decimal("1000")
+MAX_NET_PROFIT_PCT = Decimal("50")
+MAX_WITHDRAW_FEE_RATIO = Decimal("0.1")
+MAX_MIN_CONFIRM = 2000
+
+def pre_quote_filter(pool) -> tuple[bool, str]:
+    if not pool.get("pool_version"):
+        return False, "unknown_pool_version"
+    if pool.get("reserves") is None:
+        return False, "reserves_unavailable"
+    return True, "ok"
+
+def post_signal_filter(signal, direction: str) -> tuple[bool, str]:
+    if Decimal(str(signal.get("net_profit_pct", 0))) > MAX_NET_PROFIT_PCT:
+        return False, "unrealistic_profit"
+    # Direction-aware MEXC gates:
+    # A (DEX→MEXC): нужен token_deposit
+    # B (MEXC→DEX): нужен token_withdraw
+    if direction == "A" and not signal.get("token_deposit", True):
+        return False, "mexc_deposit_closed"
+    if direction == "B" and not signal.get("token_withdraw", True):
+        return False, "mexc_withdraw_closed"
+    ...
+```
+
+**D6 clarification (Gate 1):**  
+- ASS direction B + withdraw OK → **не** авто-reject.  
+- Reject только direction A при `deposit=False`.
+
+**D17:** при JOIN NULL → `token_deposit_enable=False` / `withdraw=False` (fail-closed), не True.
+
+Wire в `_write_signal` / signal_writer.
+
+**Критерий:** 0 сигналов с `net>50%`; 0 с empty `pool_version`; ASS-A режется, ASS-B может жить.
+
+#### 1.4 Pool blacklist + refuse empty version (D5)
+
+**Файл:** новый `services/pool_blacklist.py` (как в v2)  
+**Файл:** `scanner/pool_refresh_task.py`
+
+После `detect_pool_version`:
+- если пусто → **не** INSERT/UPDATE в cache; log `pool_version_unknown`.
+- scanner: skip если `not pool_version`.
+
+**Критерий:** `pools_cache` без новых empty version; повторных `B_reserves_result raw=None` нет (blacklist).
+
+---
+
+### ФАЗА 2 — RPC / Discovery (2–4 дня)
+
+#### 2.1 Wire + снизить rate limit (D3, D15)
+
+**Файлы:** `config/rate_limits.py`, `main.py`
+
+```python
+# rate_limits.py
+"rpc": {
+    "requests_per_minute": 10,  # Alchemy free ~11 eth_call/min
+    "burst": 3,
+    "multicall_batch_size": 50,
+    "retry_attempts": 4,
+    "backoff_initial_sec": 2,
+    "backoff_max_sec": 30,
+}
+
+# main.py — читать RATE_LIMITS["rpc"], НЕ хардкод 500
+```
+
+Опционально per-network / per-key лимиты при RoundRobin.
+
+**Критерий:** 0× 429 за 1 час на BSC+ARB.
+
+#### 2.2 Кэш immutable + меньше RPC
+
+Не звать каждый цикл: decimals, symbol, token0/1, pool_version, v3 fee.  
+Только reserves + quote.
+
+**Критерий:** RPC/цикл ~800 (было ~3000) на 2 сетях.
+
+#### 2.3 Retry + circuit (поверх adaptive)
+
+**Файлы:** `utils/retry.py`, `utils/rate_limiter.py`, опц. `utils/circuit_breaker.py`
+
+- retry: 4 попытки, 2/4/8/16s.  
+- CB: после 5 fail подряд — cooldown 60s на endpoint (интегрировать с RoundRobin skip).  
+- Не дублировать логику daily-loss из `execution/safety.py`.
+
+**Критерий:** `retry_exhausted` ≤ 2/час; лог `circuit_breaker_open` при серии ошибок.
+
+#### 2.4 Discovery cache-only (D10)
+
+**Файл:** `discovery/source_manager.py`
+
+Если все HTTP unhealthy и onchain budget exhausted → `return load_pools_from_cache()`.
+
+**Критерий:** бот сканирует кэш при мёртвом dexscreener/gecko.
+
+---
+
+### ФАЗА 3 — Execution hardening (1–2 нед)
+
+#### 3.1 Multihop min_out (D7)
+
+**Файл:** `execution/executor.py` (не dex_executor)
+
+```python
+min_out = await self._fresh_min_out(opp)  # всегда
+if min_out is None:
+    return skipped
+
+# _build_multihop_tx: передать min_out в builder; запретить default=1 на live path
+# Для каждого hop — fresh quote или skip
+```
+
+**Критерий:** 0 live/dry-run tx с `amountOutMinimum=1`.
+
+#### 3.2 Dynamic watcher expiry (D8)
+
+**Файлы:** `config/settings.py`, `scanner/signal_watcher.py`
+
+Использовать уже сохранённый `token_min_confirm` + block_time сети:
+
+```python
+expiry = int(min_confirm * block_time_sec + 120)
+if age > expiry: remove
+```
+
+Align с `EXECUTION_MAX_CONFIRMATIONS` в `safety.py` (документировать расхождение scan vs exec).
+
+**Критерий:** AIDOGE-like (min_confirm=5000, ARB 0.25s) живёт ~23 мин, не 5.
+
+#### 3.3 Fee fallback alert (D9)
+
+Оставить fallback, но:
+- снизить ETH fallback (или не использовать ETH до возврата сети);
+- метрика `gas_estimate_fallback` в `metrics/health.py`;
+- алерт если >5/час.
+
+#### 3.4 MEXC capital TTL
+
+`mexc_executor` cache TTL 3600 → 300 (или env). Scan-time flags уже direction-aware (1.3).
+
+---
+
+### ФАЗА 4 — Мониторинг и тесты
+
+#### 4.1 Расширить `metrics/health.py` (не monitoring.py)
+
+Добавить counters: `rpc_429`, `signals_filtered`, `blacklisted_pools`, `circuit_open`, `decimals_mismatch`, `fake_token_rejected`.  
+Dashboard `/api/health` или существующий `/health` на :8765.
+
+#### 4.2 Тесты
+
+| Тест | Файл |
+|------|------|
+| fail-closed decimals | `tests/unit/test_token_meta_service.py` |
+| signal filters на выборке signals.jsonl | `tests/unit/test_signal_filters.py` |
+| pool blacklist TTL | `tests/unit/test_pool_blacklist.py` |
+| executor multihop rejects min_out=1 | `tests/unit/test_executor_slippage.py` |
+| ACTIVE_NETWORKS filter | `tests/unit/test_networks.py` |
+| mask_url in rpc log path | `tests/unit/test_logging_mask.py` |
+
+#### 4.3 STATE.md sync
+
+Добавить секцию «Plan D1–D18 (Qwen review)» отдельно от A1–G6. Не переиспользовать ID D1/D2.
+
+#### 4.4 ETH return (опционально)
+
+Только после: decimals harden, whitelist, rate limit, отдельный Alchemy key, `ACTIVE_NETWORKS.add("ETHEREUM")`.
+
+#### 4.5 `.env.example` sync
+
+- `ALCHEMY_KEY_1/2`, `WATCHER_EXPIRY_SEC`, `SLIPPAGE_BUFFER_BPS=30`
+- fix leftover `DEXTOLS` если ещё где-то
+- document `EXECUTION_DRY_RUN`, `EXECUTION_MAX_CONFIRMATIONS`
+
+---
+
+## Часть III. Чеклист готовности к live
+
+### Gate 1 — Dry Run (после Фазы 1)
+
+- [ ] Decimals: нет silent-18 на miss; known stables OK
+- [ ] 0 сигналов `net_profit > 50%`
+- [ ] 0 сигналов с empty `pool_version`
+- [ ] Direction A + `deposit=False` → reject
+- [ ] Direction B + `withdraw=True` (ASS-like) → allowed by policy
+- [ ] Canonical BAT не rejected; fake ticker address → rejected
+- [ ] AIDOGE-like / LOOP-like проходят sanity net%
+
+### Gate 2 — Stable Run (после Фазы 2)
+
+- [ ] 0× 429 / 1 час (BSC+ARB only)
+- [ ] `RATE_LIMITS["rpc"]` реально используется (`main.py`)
+- [ ] RPC/цикл < 1000
+- [ ] Лог/час < 10 МБ; 0 plaintext Alchemy keys
+- [ ] Cache-only discovery при unhealthy HTTP
+- [ ] Circuit / adaptive срабатывает под нагрузкой
+
+### Gate 3 — Paper Trading (после Фазы 3)
+
+- [ ] `EXECUTION_DRY_RUN=True`
+- [ ] Multihop: `min_out ≠ 1`
+- [ ] Watcher expiry динамический
+- [ ] `gas_estimate_fallback` < 5/час
+- [ ] 3+ сигнала / 24ч с `net > 2%` после фильтров
+
+### Gate 4 — Live (Gate 3 + 48ч paper)
+
+- [ ] `EXECUTION_DRY_RUN=False`
+- [ ] MEXC ≥ $500 USDT; wallet ≥ 0.05 BNB + 0.01 ETH(ARB)
+- [ ] Keys only in `.env`; rotated
+- [ ] Max trade $100 первая неделя
+- [ ] Alerts: signal / exec / error / 429
+- [ ] `/health` OK
+
+---
+
+## Часть IV. Ожидаемые метрики
+
+| Метрика | Сейчас (live) | После Ф1 | После Ф2 | После Ф3 |
+|---------|---------------|----------|----------|----------|
+| Пулов empty version | 818/3296 | →0 новых | 0 | 0 |
+| Сигналы net>50% | есть (SHIB/ASSET…) | 0 | 0 | 0 |
+| RPC 429/час | много | много* | ≤2 | ≤2 |
+| Сетей runtime | 5 | 2 | 2 | 2 |
+| Single-hop slippage | OK | OK | OK | OK |
+| Multihop min_out | =1 | =1 | =1 | fresh |
+| Watcher expiry | 300s | 300s | 300s | dynamic |
+| Key leak in logs | да | нет | нет | нет |
+
+\*Ф1 не чинит 429 — только Ф0 сети + Ф2 rate limit.
+
+---
+
+## Часть V. Порядок файлов (v3)
+
+| Prio | Файл | Фаза | Действие |
+|------|------|------|----------|
+| 1 | `.env` + log scrub | 0 | Ротация ключей |
+| 2 | `utils/logging.py` | 0 | httpx WARNING + export mask |
+| 3 | `clients/rpc_client.py` | 0 | `mask_url` на все URL-логи |
+| 4 | `config/networks.py` | 0 | `ACTIVE_NETWORKS` |
+| 5 | `services/token_meta_service.py` | 1 | KNOWN_DECIMALS + fail-closed |
+| 6 | `scanner/scanner.py` | 1 | no default 18; filters; skip empty ver |
+| 7 | `scanner/chain_engine.py` | 1 | no default 18 |
+| 8 | `security/token_address_registry.py` | 1 | **новый** (не whitelist-дубль) |
+| 9 | `services/signal_filters.py` | 1 | **новый** |
+| 10 | `services/pool_blacklist.py` | 1 | **новый** |
+| 11 | `scanner/pool_refresh_task.py` | 1 | refuse empty version; fail-closed flags |
+| 12 | `config/rate_limits.py` | 2 | rpm 500→10 |
+| 13 | `main.py` | 2 | wire `RATE_LIMITS["rpc"]` |
+| 14 | `utils/retry.py` + rate_limiter/CB | 2 | backoff + open circuit |
+| 15 | `discovery/source_manager.py` | 2 | cache-only path |
+| 16 | `execution/executor.py` | 3 | multihop min_out |
+| 17 | `scanner/signal_watcher.py` | 3 | dynamic expiry |
+| 18 | `services/fee_service.py` | 3 | fallback metric |
+| 19 | `execution/mexc_executor.py` | 3 | TTL 300 |
+| 20 | `metrics/health.py` | 4 | counters (не monitoring.py) |
+| 21 | `STATE.md` + `.env.example` | 4 | sync ID / docs |
+| 22 | `tests/unit/...` | 4 | покрытие D1–D18 |
+
+---
+
+## Часть VI. Anti-patterns (не делать)
+
+1. Не создавать `services/decimals_service.py` / `services/monitoring.py` — дубли.
+2. Не ссылаться на `execution/dex_executor.py` — файла нет.
+3. Не путать STATE.md D1/D2 (gas) с планом D1/D2 (decimals).
+4. Не банить ASS только за `deposit=False` без учёта direction.
+5. Не банить canonical BAT `…2887ef` без on-chain proof фейка.
+6. Не оставлять `requests_per_minute=500` в `main.py` после правки `rate_limits.py`.
+7. Не считать `STATE.md COMPLETE` = готовность к live по этому плану.
+
+---
+
+## Часть VII. Changelog v2 → v3
+
+- Статусы D1–D12 обновлены по live-коду (частичные фиксы отмечены).
+- Добавлены D13–D18.
+- Пути исправлены (`executor.py`, reuse token_meta / health / rate_limits).
+- D6/ASS Gate переписан direction-aware.
+- BAT claim помечен как требующий перепроверки.
+- Фаза 0 усилена: mask_url + scrub логов.
+- D11 поднят по приоритету (CU burn → 429).
+- Явный конфликт с `STATE.md` задокументирован.
+- Метрики «сейчас» заменены на live snapshot (3296 pools, 818 empty version).

@@ -1,0 +1,4180 @@
+### USER
+По плану из 1файла я получил проект который находится в 2 файле( фактически он на диске в файлах все как надо, но ты не умеешь работать с такой средой поэтому вот так). 
+
+### ASSISTANT
+Понял, Повелитель. Изучил оба файла.
+
+**Контекст зафиксирован:**
+
+- **`plan.md`** — детальный план из 27 секций: архитектура, сети (Ethereum, BSC, Polygon, Arbitrum, Robinhood Chain), MEXC API, stablecoin whitelist, DEX registry, rate limits, storage с atomic replace, pool discovery, RPC/ABI, DEX adapters (V2/V3/V4), fee service, profit calculator (Direction A/B), security checks, scanner loop, тестирование и production checklist.
+
+- **`project_dump.txt`** — 122 файла, дамп от `2026-07-25 17:49:44`. Проект выглядит **завершённым**:
+  - Все 15 фаз выполнены (`STATE.md`, `FINAL_REPORT.md`, `TASKS.md` — все `[x]`)
+  - `BLOCKERS.md` — "No blockers"
+  - TODO_VERIFY адреса заполнены (решение `DECISION-002`)
+  - Есть GUI-дашборд (`gui/dashboard.py`, `run_gui.py`) — 8 вкладок
+  - Health/metrics HTTP-сервер на `:8765`
+  - Тесты: unit + integration + api_tests (DexScreener, GeckoTerminal, MEXC, on-chain factory, RPC)
+  - Discovery failover: DexScreener → GeckoTerminal → on-chain factory
+  - Scanner читает пулы из `data/pools_cache.json` (обход Windows WAL-проблем)
+  - `PoolRefreshTask` пишет напрямую в active DB через `BEGIN IMMEDIATE` транзакцию
+
+Готов к следующей задаче — что именно нужно сделать? Например:
+- Рефакторинг / добавление фичи
+- Анализ на баги или отклонения от плана
+- Реализация V4 adapter
+- Доработка security checks
+- Оптимизация производительности
+- Что-то другое
+
+### USER
+Проанализируй весь проект, составь ревью-план. В каждом пункте напиши как в текущем формате реализовано, как должно быть реализовано, почему так должно быть, как это реализовать( ты общаешься с моделью младшего поколения уровня qwen3-3.5). 
+
+### ASSISTANT
+Повелитель, ниже — подробный **ревью-план** всего проекта. Я сгруппировал пункты по приоритету: сначала то, что ломает денежные расчёты и сигналы, затем надёжность, производительность, тесты, безопасность и документацию.
+
+Для каждого пункта:
+
+- **Сейчас** — как реализовано в текущем дампе.
+- **Должно быть** — как должно быть по плану и здравому смыслу.
+- **Почему** — причина, риск, влияние.
+- **Как реализовать** — инструкция, понятная для младшей модели уровня `qwen3-3.5`.
+
+---
+
+# Общие правила для реализации через младшую модель
+
+Чтобы `qwen3-3.5` не ломала проект, давай задачи строго по одному пункту.
+
+Формат промпта для младшей модели:
+
+```text
+Ты работаешь только с одним пунктом ревью-плана: <номер и название>.
+Не меняй другие файлы, если это не требуется явно.
+Сначала покажи список файлов, которые будешь менять.
+Затем покажи diff.
+После diff добавь или обнови unit-тесты.
+В конце покажи команду для запуска тестов.
+Не удаляй существующие тесты, если они не ошибочны.
+```
+
+Обязательный порядок:
+
+1. Критические денежные расчёты.
+2. Корректность пулов и discovery.
+3. Storage / backup / refresh.
+4. RPC / rate limits / производительность.
+5. Security checks.
+6. Тесты.
+7. Документация и GUI.
+
+---
+
+# A. Критические проблемы денежных расчётов
+
+---
+
+## A1. Не учитываются decimals токена и стейблкоина
+
+### Сейчас
+
+В `scanner/scanner.py`:
+
+```python
+base_amount_wei = int(settings.BASE_AMOUNT_USD * Decimal(10**18))
+```
+
+То есть бот всегда считает, что у стейблкоина 18 знаков.
+
+В `services/profit_calculator.py`:
+
+```python
+token_decimals: int = 18
+stablecoin_decimals: int = 18
+```
+
+Scanner не передаёт реальные decimals.
+
+### Должно быть
+
+Для каждого пула нужно знать:
+
+```text
+token_decimals
+stablecoin_decimals
+```
+
+И использовать их:
+
+```text
+stable_amount_raw = base_amount_usd * 10 ** stablecoin_decimals
+token_amount = dex_amount_out / 10 ** token_decimals
+```
+
+### Почему
+
+USDT и USDC имеют разные decimals:
+
+| Сеть | USDT | USDC |
+|---|---:|---:|
+| Ethereum | 6 | 6 |
+| BSC | 18 | 18 |
+| Polygon | 6 | 6 |
+| Arbitrum | 6 | 6 |
+
+Если использовать 18 для USDT/USDC на Ethereum, бот попытается процитировать swap на сумму в триллионы раз больше реальной.
+
+Это полностью ломает:
+
+- quote;
+- gross profit;
+- net profit;
+- сигналы.
+
+### Как реализовать
+
+1. Создать сервис:
+
+```text
+services/token_meta_service.py
+```
+
+2. Добавить класс `TokenMetaService`:
+
+```python
+class TokenMetaService:
+    async def get_decimals(self, network: str, token_address: str) -> int:
+        ...
+```
+
+3. Использовать ERC20 ABI:
+
+```python
+from abi.erc20 import ERC20_ABI
+```
+
+4. Кэшировать decimals:
+
+```python
+self._cache: dict[tuple[str, str], int] = {}
+```
+
+5. В `pool_refresh_task.py` после discovery добавлять в `pools_cache.json`:
+
+```json
+{
+  "network": "ETHEREUM",
+  "token_address": "0x...",
+  "stablecoin_address": "0x...",
+  "token_decimals": 18,
+  "stablecoin_decimals": 6
+}
+```
+
+6. В `scanner.py` заменить:
+
+```python
+base_amount_wei = int(settings.BASE_AMOUNT_USD * Decimal(10**18))
+```
+
+на:
+
+```python
+stablecoin_decimals = pool["stablecoin_decimals"]
+base_amount_raw = floor_to_wei(settings.BASE_AMOUNT_USD, stablecoin_decimals)
+```
+
+7. В `profit_calculator.py` передавать:
+
+```python
+token_decimals=pool["token_decimals"]
+stablecoin_decimals=pool["stablecoin_decimals"]
+```
+
+8. Добавить тесты:
+
+- USDC decimals = 6;
+- token decimals = 18;
+- amount raw считается правильно;
+- profit calculator правильно конвертирует amount_out.
+
+---
+
+## A2. Scanner использует только Direction A
+
+### Сейчас
+
+В `scanner/scanner.py` есть только:
+
+```python
+amount_out = await adapter.quote_exact_input(
+    network=network,
+    pool_address=pool_address,
+    token_in=stablecoin_address,
+    token_out=token_address,
+    amount_in=base_amount_wei,
+)
+```
+
+Это направление:
+
+```text
+stable → token на DEX
+```
+
+Затем вызывается:
+
+```python
+result_a = await self._profit_calculator.calculate_direction_a(...)
+```
+
+Direction B не сканируется.
+
+### Должно быть
+
+Для каждого пула нужно проверять оба направления:
+
+```text
+Direction A:
+wallet stable → DEX buy token → MEXC sell token → wallet stable
+
+Direction B:
+wallet stable → MEXC buy token → DEX sell token → wallet stable
+```
+
+### Почему
+
+В плане явно указано:
+
+```text
+Прибыль считается как полный round-trip:
+wallet → DEX → MEXC → wallet
+wallet → MEXC → DEX → wallet
+```
+
+Если проверять только Direction A, половина арбитражных возможностей теряется.
+
+### Как реализовать
+
+1. В `scanner.py` внутри `process_pool` после Direction A добавить Direction B.
+
+2. Рассчитать количество токена для покупки на MEXC:
+
+```python
+token_amount = settings.BASE_AMOUNT_USD / mexc_price_usd
+```
+
+3. Конвертировать в raw amount:
+
+```python
+token_amount_raw = floor_to_wei(token_amount, token_decimals)
+```
+
+4. Сделать quote:
+
+```python
+dex_stable_out = await adapter.quote_exact_input(
+    network=network,
+    pool_address=pool_address,
+    token_in=token_address,
+    token_out=stablecoin_address,
+    amount_in=token_amount_raw,
+)
+```
+
+5. Вызвать:
+
+```python
+result_b = await self._profit_calculator.calculate_direction_b(...)
+```
+
+6. Если `result_b["signal"] is True`, записать сигнал с:
+
+```python
+direction="MEXC_BUY_DEX_SELL"
+```
+
+7. Добавить тесты:
+
+- Direction A вызывается;
+- Direction B вызывается;
+- если оба прибыльные, пишутся два сигнала;
+- если Direction B убыточный, сигнал не пишется.
+
+---
+
+## A3. Неправильный quote asset в сигналах
+
+### Сейчас
+
+В `scanner.py`:
+
+```python
+mexc_price_usd = self._price_service.get_price(token_coin, "USDT")
+if mexc_price_usd is None:
+    mexc_price_usd = self._price_service.get_price(token_coin, "USDC")
+```
+
+Но дальше:
+
+```python
+await self._write_signal(
+    network, pool, token_coin, "USDT",
+    result_a, mexc_price_usd, amount_out,
+)
+```
+
+То есть даже если цена взята из `TOKENUSDC`, сигнал всё равно пишется как `USDT`.
+
+### Должно быть
+
+Сигнал должен использовать реальный quote asset:
+
+```python
+mexc_quote_asset = "USDT" или "USDC"
+```
+
+И этот quote asset должен соответствовать:
+
+- цене на MEXC;
+- стейблкоину в пуле;
+- полю `mexc_symbol`.
+
+### Почему
+
+Иначе сигнал содержит неверные данные:
+
+```json
+{
+  "mexc_quote_asset": "USDT",
+  "mexc_symbol": "TOKENUSDT"
+}
+```
+
+хотя цена была взята из `TOKENUSDC`.
+
+Это опасно для анализа и будущего исполнения.
+
+### Как реализовать
+
+1. Добавить в `pools_cache.json` поле:
+
+```json
+"stablecoin_coin": "USDC"
+```
+
+2. В `pool_refresh_task.py` изменить SQL:
+
+```sql
+SELECT
+    p.network,
+    p.token_address,
+    p.stablecoin_address,
+    p.pool_address,
+    p.dex,
+    ma.coin AS token_coin,
+    sc.coin AS stablecoin_coin
+FROM pools p
+LEFT JOIN mexc_assets ma
+    ON ma.contract_address = p.token_address
+   AND ma.network = p.network
+LEFT JOIN stablecoins sc
+    ON sc.address = p.stablecoin_address
+   AND sc.network = p.network
+```
+
+3. В scanner использовать:
+
+```python
+quote_asset = pool.get("stablecoin_coin")
+if not quote_asset:
+    quotes_failed += 1
+    return
+
+mexc_price_usd = self._price_service.get_price(token_coin, quote_asset)
+```
+
+4. Убрать fallback `USDT -> USDC`, если пул привязан к конкретному стейблкоину.
+
+5. В сигнале писать:
+
+```python
+mexc_quote_asset=quote_asset,
+mexc_symbol=f"{token_coin}{quote_asset}",
+pool_stablecoin_coin=quote_asset,
+```
+
+6. Добавить тест:
+
+- пул USDC;
+- цена есть только по `TOKENUSDC`;
+- сигнал имеет `mexc_quote_asset="USDC"`.
+
+---
+
+## A4. MEXC withdraw/deposit fees не передаются в расчёт
+
+### Сейчас
+
+`ProfitCalculator.calculate_direction_a` имеет параметры:
+
+```python
+mexc_withdraw_fee_usd: Decimal = Decimal("0")
+mexc_deposit_fee_usd: Decimal = Decimal("0")
+```
+
+Scanner их не передаёт.
+
+Поэтому расчёт всегда использует ноль.
+
+### Должно быть
+
+Для Direction A:
+
+```text
+DEX buy token
+→ transfer token to MEXC
+→ sell token on MEXC
+→ withdraw stable from MEXC
+```
+
+Нужно учитывать:
+
+```text
+MEXC withdraw fee for stablecoin
+MEXC deposit fee if any
+MEXC trading fee
+DEX network fee
+slippage
+```
+
+Для Direction B:
+
+```text
+MEXC buy token
+→ withdraw token from MEXC
+→ sell token on DEX
+```
+
+Нужно учитывать:
+
+```text
+MEXC withdraw fee for token
+MEXC deposit fee if any
+MEXC trading fee
+DEX network fee
+slippage
+```
+
+### Почему
+
+Если не учитывать withdraw fee, бот будет показывать прибыльные сигналы, которые в реальности убыточны.
+
+Например:
+
+```text
+Gross profit: $0.80
+Withdraw fee: $1.20
+Net profit: -$0.40
+```
+
+Без комиссии сигнал ложный.
+
+### Как реализовать
+
+1. Добавить в `FeeService` методы:
+
+```python
+async def get_mexc_withdraw_fee_usd(
+    self,
+    coin: str,
+    network: str,
+    token_price_usd: Decimal,
+) -> Decimal:
+    ...
+```
+
+2. Использовать данные из таблиц:
+
+```text
+mexc_assets
+stablecoins
+```
+
+Поле:
+
+```text
+withdraw_fee
+```
+
+3. Формула:
+
+```text
+withdraw_fee_usd = withdraw_fee_coin_amount * token_price_usd
+```
+
+Для стейблкоина:
+
+```text
+withdraw_fee_usd = withdraw_fee_coin_amount * stablecoin_price_usd
+```
+
+4. Для Direction A:
+
+- брать withdraw fee стейблкоина;
+- передавать в `calculate_direction_a`.
+
+5. Для Direction B:
+
+- брать withdraw fee токена;
+- передавать в `calculate_direction_b`.
+
+6. Если данных о комиссии нет:
+
+```python
+warning = "mexc_withdraw_fee_unknown"
+```
+
+и использовать консервативное значение или skip.
+
+7. Добавить тесты:
+
+- withdraw fee = 1 token, price = 2 USD → fee = 2 USD;
+- stablecoin withdraw fee = 1 USDT → fee ≈ 1 USD;
+- если fee неизвестна, добавляется warning.
+
+---
+
+## A5. DEX pool fee: риск двойного учёта или отсутствия учёта
+
+### Сейчас
+
+В `FeeBreakdown` есть:
+
+```python
+dex_pool_fee_usd: Decimal = Decimal("0")
+```
+
+Но `FeeService` её не заполняет.
+
+V2/V3 adapters возвращают `amount_out` из on-chain quote.
+
+### Должно быть
+
+Нужно явно определить:
+
+```text
+DEX quote уже включает pool fee
+или
+DEX quote не включает pool fee
+```
+
+И не допускать двойного учёта.
+
+### Почему
+
+Для Uniswap V2/V3:
+
+- `getAmountsOut` обычно уже учитывает комиссию пула;
+- `quoteExactInputSingle` тоже возвращает amount out после комиссии пула.
+
+Если отдельно вычесть pool fee, прибыль будет занижена.
+
+Если quote не учитывает fee, а бот её не вычтет — прибыль будет завышена.
+
+### Как реализовать
+
+1. В `dex/base_adapter.py` добавить контракт:
+
+```python
+quote_includes_pool_fee: bool = True
+```
+
+2. Для V2/V3 установить:
+
+```python
+quote_includes_pool_fee = True
+```
+
+3. В `FeeService` не добавлять `dex_pool_fee_usd`, если quote уже включает fee.
+
+4. В документации и в сигнале добавить поле или комментарий:
+
+```text
+dex_pool_fee_included_in_quote=True
+```
+
+5. Если используется reserve fallback, проверить, что формула уже вычитает fee:
+
+```python
+amount_in_with_fee = amount_in * (10000 - fee_bps)
+```
+
+Это хорошо.
+
+6. Добавить тесты:
+
+- V2 quote не вычитает pool fee повторно;
+- V3 quote не вычитает pool fee повторно;
+- reserve fallback учитывает fee один раз.
+
+---
+
+## A6. Security checks не интегрированы в scanner
+
+### Сейчас
+
+Есть модули:
+
+```text
+security/token_security_checker.py
+security/pool_security_checker.py
+security/warning_builder.py
+```
+
+Но scanner их не вызывает.
+
+В scanner есть только:
+
+```python
+if net_profit_pct > Decimal("10"):
+    warnings.append("thin_liquidity_quote_unreliable")
+```
+
+### Должно быть
+
+После расчёта прибыли, если сигнал проходит порог:
+
+```python
+net_profit_pct > MIN_NET_PROFIT_PCT
+```
+
+нужно вызвать:
+
+```python
+token_warnings = await token_security_checker.check(...)
+pool_warnings = await pool_security_checker.check(...)
+warnings = WarningBuilder.build_warnings(token_warnings, pool_warnings)
+```
+
+Сигнал не удаляется, только добавляются warnings.
+
+### Почему
+
+В плане прямо сказано:
+
+```text
+Security-проверки выполняются только если пул уже показал прибыль.
+Если security-проверка дает warning:
+    signal is not removed
+    warning is attached
+```
+
+Сейчас security checks фактически отсутствуют.
+
+### Как реализовать
+
+1. В `Scanner.__init__` добавить:
+
+```python
+token_security_checker,
+pool_security_checker,
+warning_builder,
+```
+
+2. В `main.py` создать эти сервисы и передать в scanner.
+
+3. В `_write_signal` до создания `ArbitrageSignal`:
+
+```python
+token_warnings = await self._token_security_checker.check(
+    network=network,
+    token_address=pool["token_address"],
+)
+
+pool_warnings = await self._pool_security_checker.check(
+    network=network,
+    pool_address=pool["pool_address"],
+    pool_version=pool.get("pool_version"),
+)
+
+security_warnings = WarningBuilder.build_warnings(
+    token_warnings=token_warnings,
+    pool_warnings=pool_warnings,
+)
+```
+
+4. Объединить с текущими warnings:
+
+```python
+warnings.extend(security_warnings)
+```
+
+5. Не удалять сигнал при warnings.
+
+6. Добавить тесты:
+
+- если security checker возвращает warning, сигнал всё равно пишется;
+- warnings дедуплицируются;
+- если checker падает, добавляется `security_check_unavailable`.
+
+---
+
+## A7. On-chain V3 factory discovery имеет неправильное ABI-кодирование fee
+
+### Сейчас
+
+В `discovery/onchain_factory_source.py`:
+
+```python
+fee_hex = format(fee_bps * 100, "012x")
+data = (
+    "0x1698ee82"
+    + token_address[2:].zfill(64)
+    + stablecoin_address[2:].zfill(64)
+    + fee_hex
+)
+```
+
+`fee_hex` имеет длину 12 hex-символов.
+
+### Должно быть
+
+`uint24` в ABI кодируется как 32-байтное слово:
+
+```python
+fee_hex = format(fee_bps * 100, "x").zfill(64)
+```
+
+### Почему
+
+Solidity ABI требует, чтобы каждый параметр занимал 32 байта.
+
+Сейчас calldata получается короче, чем нужно:
+
+```text
+selector 4 bytes
+address 32 bytes
+address 32 bytes
+fee 6 bytes instead of 32 bytes
+```
+
+RPC-вызов может возвращать ошибку или пустой результат.
+
+Это ломает on-chain fallback discovery.
+
+### Как реализовать
+
+1. Открыть:
+
+```text
+discovery/onchain_factory_source.py
+```
+
+2. В методе `_check_v3_factory` заменить:
+
+```python
+fee_hex = format(fee_bps * 100, "012x")
+```
+
+на:
+
+```python
+fee_hex = format(fee_bps * 100, "x").zfill(64)
+```
+
+3. Добавить unit-тест:
+
+```python
+def test_v3_factory_calldata_length():
+    token = "0x" + "1" * 40
+    stable = "0x" + "2" * 40
+    fee_bps = 5
+
+    fee_hex = format(fee_bps * 100, "x").zfill(64)
+    data = (
+        "0x1698ee82"
+        + token[2:].zfill(64)
+        + stable[2:].zfill(64)
+        + fee_hex
+    )
+
+    assert len(data) == 2 + 8 + 64 * 3
+```
+
+4. Проверить, что fee tiers правильные:
+
+```text
+1 bps -> 100
+5 bps -> 500
+25 bps -> 2500
+30 bps -> 3000
+100 bps -> 10000
+```
+
+---
+
+## A8. Refresh удаляет старые пулы, если новых найдено ноль
+
+### Сейчас
+
+`PoolRefreshTask._run_refresh_inner` пишет напрямую в active DB:
+
+```python
+conn.execute("DELETE FROM pools;")
+```
+
+Если discovery нашёл 0 пулов, таблица `pools` останется пустой.
+
+### Должно быть
+
+Если:
+
+```text
+old_pools > 0
+new_pools == 0
+```
+
+то нужно сохранить старые пулы или пометить их stale, но не удалять.
+
+### Почему
+
+Ноль новых пулов может означать:
+
+- DexScreener временно недоступен;
+- GeckoTerminal rate limit;
+- RPC ошибка;
+- временная проблема сети.
+
+Удаление рабочих пулов остановит scanner.
+
+В `storage/repository.py` уже есть защита:
+
+```python
+if active_has_pools and temp_pools == 0:
+    atomic_replace_skipped
+```
+
+Но она не используется, потому что refresh пишет напрямую.
+
+### Как реализовать
+
+1. В `PoolRefreshTask._run_refresh_inner` перед `DELETE FROM pools` получить старое количество:
+
+```python
+old_pools_count = conn.execute("SELECT COUNT(*) FROM pools;").fetchone()[0]
+```
+
+2. Если `written == 0` и `old_pools_count > 0`:
+
+- не удалять старые пулы;
+- обновить только `mexc_assets` и `stablecoins`;
+- записать warning:
+
+```python
+logger.warning("pool_refresh_kept_stale_pools: old=%d new=0", old_pools_count)
+```
+
+3. Добавить поле в `refresh_log`:
+
+```text
+status = "completed_with_stale_pools"
+```
+
+4. Добавить тест:
+
+- в DB есть 5 пулов;
+- discovery возвращает 0;
+- после refresh пулы остаются;
+- assets/stablecoins обновляются.
+
+---
+
+## A9. Refresh не делает backup перед заменой данных
+
+### Сейчас
+
+`BackupManager` существует.
+
+`StateRepository` получает `backup_manager`.
+
+Но `PoolRefreshTask` не вызывает:
+
+```python
+backup_manager.create_backup()
+```
+
+### Должно быть
+
+Перед успешной заменой данных нужно делать backup:
+
+```text
+data/state/backups/active_YYYYMMDD_HHMMSS.sqlite3
+```
+
+Хранить последние 5.
+
+### Почему
+
+В плане:
+
+```text
+Backup before atomic replace.
+Keep newest 5.
+Delete older.
+```
+
+Если refresh повредит данные или запишет плохие пулы, нужна возможность откатиться.
+
+### Как реализовать
+
+1. Передать `BackupManager` в `PoolRefreshTask` явно.
+
+2. В `_run_refresh_inner` перед транзакцией:
+
+```python
+self._backup_manager.create_backup()
+```
+
+3. Если backup не удался:
+
+```python
+logger.error("backup_failed_refresh_aborted")
+return {"error": "backup_failed"}
+```
+
+4. Добавить тест:
+
+- создаётся backup файл;
+- после 6 refresh остаётся не более 5 backup;
+- при отсутствии active DB backup не создаётся.
+
+---
+
+## A10. Web3 создаётся заново на каждый quote и не имеет rate limit
+
+### Сейчас
+
+В `main.py`:
+
+```python
+def web3_factory(network: str):
+    rpc_url = resolve_rpc_url(network)
+    return AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(rpc_url))
+```
+
+Каждый вызов создаёт новый `AsyncWeb3`.
+
+В adapters:
+
+```python
+w3 = self._web3_factory(network)
+```
+
+То есть на каждый quote создаётся новый provider.
+
+### Должно быть
+
+Нужен кэш Web3-инстансов:
+
+```python
+self._web3_cache: dict[str, AsyncWeb3] = {}
+```
+
+И каждый RPC-вызов должен проходить через rate limiter.
+
+### Почему
+
+Сейчас:
+
+- создаются лишние HTTP-сессии;
+- нет ограничения RPC rate limit;
+- можно быстро упереться в Alchemy/public RPC лимиты;
+- возможны утечки ресурсов.
+
+### Как реализовать
+
+Вариант для младшей модели — минимально безопасный.
+
+1. Создать:
+
+```text
+clients/web3_manager.py
+```
+
+2. Класс:
+
+```python
+class Web3Manager:
+    def __init__(self, rate_limiters: dict[str, SimpleRateLimiter]):
+        self._cache: dict[str, AsyncWeb3] = {}
+        self._rate_limiters = rate_limiters
+```
+
+3. Метод:
+
+```python
+def get_web3(self, network: str) -> AsyncWeb3 | None:
+    if network in self._cache:
+        return self._cache[network]
+
+    rpc_url = resolve_rpc_url(network)
+    if not rpc_url:
+        return None
+
+    w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(rpc_url))
+    self._cache[network] = w3
+    return w3
+```
+
+4. В adapters перед contract call вызывать:
+
+```python
+await self._rate_limiter.acquire()
+```
+
+5. В `main.py` заменить `web3_factory` на `web3_manager.get_web3`.
+
+6. В shutdown закрыть HTTP-сессии, если возможно, или хотя бы очистить кэш.
+
+7. Добавить тест:
+
+- повторный вызов `get_web3("ETHEREUM")` возвращает тот же объект;
+- если RPC URL нет, возвращается None.
+
+---
+
+## A11. AdapterFactory может выбрать неправильную версию DEX
+
+### Сейчас
+
+В `dex/adapter_factory.py`:
+
+```python
+_DEX_ALIASES = {
+    "pancakeswap": ["pancakeswap_v2", "pancakeswap_v3"],
+    "uniswap": ["uniswap_v2", "uniswap_v3"],
+}
+```
+
+Если discovery вернул `dex="pancakeswap"`, factory сначала尝试ует `pancakeswap_v2`.
+
+Если v2 существует в registry, он будет закэширован даже для V3-пула.
+
+### Должно быть
+
+Adapter должен выбираться по:
+
+```text
+network + dex_id + pool_version
+```
+
+или по реальной on-chain версии пула.
+
+### Почему
+
+V2 и V3 имеют разные ABI:
+
+- V2: `getReserves`, router `getAmountsOut`;
+- V3: `fee`, `QuoterV2.quoteExactInputSingle`.
+
+Если V3-пул обрабатывается V2-адаптером, quote будет неверным или упадёт.
+
+### Как реализовать
+
+1. Использовать `PoolDetector`:
+
+```python
+dex/pool_detector.py
+```
+
+2. В refresh или scanner определять версию пула:
+
+```python
+pool_version = await pool_detector.detect_version(network, pool_address)
+```
+
+3. Сохранять:
+
+```json
+"pool_version": "v2"
+```
+
+в `pools_cache.json`.
+
+4. Изменить `AdapterFactory.get_adapter`:
+
+```python
+def get_adapter(self, network: str, dex_id: str, pool_version: str | None = None):
+```
+
+5. Если `pool_version` известен:
+
+- искать registry entry с этой версией;
+- не использовать вслепую alias `[v2, v3]`.
+
+6. Если `pool_version` неизвестен:
+
+- использовать detector;
+- если не удалось определить, вернуть None и warning.
+
+7. Добавить тесты:
+
+- `pancakeswap + v2` → V2Adapter;
+- `pancakeswap + v3` → V3Adapter;
+- неизвестная версия → None.
+
+---
+
+## A12. Scanner не определяет pool version
+
+### Сейчас
+
+`ValidPool.pool_version` существует, но почти нигде не заполняется.
+
+В сигналах:
+
+```python
+pool_version=""
+```
+
+### Должно быть
+
+Каждый пул должен иметь:
+
+```text
+pool_version = "v2" | "v3" | "v4" | None
+```
+
+### Почему
+
+Без версии:
+
+- adapter может быть выбран неправильно;
+- security checker не может проверить V4 hook risk;
+- аналитика сигналов неполная.
+
+### Как реализовать
+
+1. В `pool_refresh_task.py` после discovery вызывать:
+
+```python
+pool_version = await pool_detector.detect_version(network, pool_address)
+```
+
+2. Писать в DB:
+
+```python
+pool.pool_version or ""
+```
+
+3. Писать в `pools_cache.json`:
+
+```json
+"pool_version": "v3"
+```
+
+4. В scanner передавать `pool_version` в:
+
+- adapter factory;
+- pool security checker;
+- signal.
+
+5. Добавить тест:
+
+- V2 pool определяется по `getReserves`;
+- V3 pool определяется по `fee`;
+- если оба вызова падают, версия None.
+
+---
+
+# B. Discovery, stablecoins, candidates, storage
+
+---
+
+## B1. Stablecoin registry использует все сети, а не только активные
+
+### Сейчас
+
+В `stablecoin_registry_service.py`:
+
+```python
+for network_asset in asset.networks:
+```
+
+То есть берутся даже сети, где:
+
+```python
+deposit_enable=False
+withdraw_enable=False
+```
+
+### Должно быть
+
+Для арбитража нужно использовать только active networks:
+
+```python
+asset.active_networks()
+```
+
+или как минимум учитывать флаги и добавлять warnings.
+
+### Почему
+
+Если stablecoin deposit disabled:
+
+```text
+Direction B невозможен
+```
+
+Если stablecoin withdraw disabled:
+
+```text
+Direction A невозможен
+```
+
+Использование неактивных сетей создаёт ложные пулы и ложные сигналы.
+
+### Как реализовать
+
+1. В `build_registry` заменить:
+
+```python
+for network_asset in asset.networks:
+```
+
+на:
+
+```python
+for network_asset in asset.active_networks():
+```
+
+2. Если хочется мониторинг неактивных сетей, добавить:
+
+```python
+include_inactive: bool = False
+```
+
+3. По умолчанию использовать только active.
+
+4. Добавить тест:
+
+- USDT с deposit_enable=False не попадает в registry;
+- USDT с deposit_enable=True и withdraw_enable=True попадает.
+
+---
+
+## B2. Candidate discovery дублирует запросы для USDT и USDC
+
+### Сейчас
+
+`MexcAssetService.select_candidate_tokens` возвращает отдельные кандидаты:
+
+```python
+(asset, network, contract, "USDT")
+(asset, network, contract, "USDC")
+```
+
+Discovery затем вызывается отдельно для USDT и отдельно для USDC.
+
+### Должно быть
+
+Discovery должен вызываться один раз на:
+
+```text
+network + token_address
+```
+
+А стаблкоины должны фильтроваться списком:
+
+```python
+{USDT_address, USDC_address}
+```
+
+### Почему
+
+Сейчас один и тот же токен на одной сети может вызвать DexScreener дважды.
+
+Это:
+
+- тратит rate limit;
+- замедляет refresh;
+- увеличивает шанс 429.
+
+### Как реализовать
+
+1. Изменить формат candidates:
+
+```python
+list[tuple[MexcAsset, str, str, set[str]]]
+```
+
+Где:
+
+```python
+(asset, network, contract_address, {"USDT", "USDC"})
+```
+
+2. В `pool_refresh_task.py` собирать все stablecoin addresses для этих quote assets.
+
+3. Вызывать discovery один раз:
+
+```python
+await pool_discovery_service.discover_and_filter_pools(
+    network=network,
+    token_address=contract_address,
+    stablecoin_addresses=all_valid_stablecoin_addresses,
+)
+```
+
+4. Добавить тест:
+
+- токен имеет USDT и USDC;
+- discovery вызывается один раз;
+- находятся оба пула.
+
+---
+
+## B3. On-chain fallback может не срабатывать, если primary нашли пулы, но не валидные
+
+### Сейчас
+
+`SourceManager.discover_from_all_sources` использует onchain_factory только если:
+
+```python
+primary_had_pools == False
+```
+
+Но primary могут вернуть пулы, которые не проходят фильтр token/stablecoin.
+
+Тогда `PoolDiscoveryService` вернёт пустой список, но onchain fallback уже не вызовется.
+
+### Должно быть
+
+On-chain fallback должен вызываться, если:
+
+```text
+primary sources failed
+или
+primary sources found no valid pools
+```
+
+### Почему
+
+DexScreener может вернуть пулы токена, но без нужного стейблкоина.
+
+On-chain factory может найти прямой пул через factory contract.
+
+Если fallback не вызвать, пул будет потерян.
+
+### Как реализовать
+
+1. В `PoolDiscoveryService.discover_and_filter_pools` после фильтрации проверить:
+
+```python
+if not valid_pools:
+    try onchain fallback
+```
+
+2. Либо передать в source_manager флаг:
+
+```python
+require_valid_pools=True
+```
+
+3. Onchain fallback должен вызываться только если source доступен.
+
+4. Добавить тест:
+
+- DexScreener возвращает пул с неправильным стейблкоином;
+- valid_pools empty;
+- onchain_factory вызывается;
+- onchain_factory возвращает правильный пул.
+
+---
+
+## B4. On-chain factory получает stale stablecoin registry
+
+### Сейчас
+
+В `main.py`:
+
+```python
+stablecoin_registry = stablecoin_registry_service.build_registry(assets)
+onchain_factory.set_stablecoin_registry(stablecoin_registry)
+```
+
+Это делается один раз при инициализации.
+
+В `pool_refresh_task.py` строится новый registry:
+
+```python
+stablecoin_registry = self._stablecoin_registry_service.build_registry(assets)
+```
+
+Но `onchain_factory.set_stablecoin_registry(...)` не вызывается.
+
+### Должно быть
+
+Каждый refresh должен обновлять stablecoin registry у onchain factory.
+
+### Почему
+
+MEXC может:
+
+- включить новый stablecoin;
+- выключить сеть;
+- изменить контракт;
+- изменить deposit/withdraw.
+
+Если onchain factory использует старый registry, он может искать пулы с неактуальными стейблкоинами.
+
+### Как реализовать
+
+1. В `PoolRefreshTask` получить доступ к `onchain_factory`.
+
+2. После:
+
+```python
+stablecoin_registry = self._stablecoin_registry_service.build_registry(assets)
+```
+
+вызвать:
+
+```python
+self._onchain_factory.set_stablecoin_registry(stablecoin_registry)
+```
+
+3. Если `PoolRefreshTask` не имеет прямой ссылки, добавить в `SourceManager` метод:
+
+```python
+def update_onchain_registry(self, registry):
+    ...
+```
+
+4. Добавить тест:
+
+- registry обновляется после refresh;
+- onchain_factory использует новый registry.
+
+---
+
+## B5. `pools_cache.json` не содержит достаточно данных для scanner
+
+### Сейчас
+
+Cache содержит:
+
+```json
+{
+  "network": ...,
+  "token_address": ...,
+  "stablecoin_address": ...,
+  "pool_address": ...,
+  "dex": ...,
+  "token_coin": ...
+}
+```
+
+Нет:
+
+```text
+stablecoin_coin
+pool_version
+token_decimals
+stablecoin_decimals
+```
+
+### Должно быть
+
+Scanner должен получать из cache всё необходимое для расчёта.
+
+Минимум:
+
+```json
+{
+  "network": "ETHEREUM",
+  "token_address": "0x...",
+  "token_coin": "TOKEN",
+  "token_decimals": 18,
+  "stablecoin_address": "0x...",
+  "stablecoin_coin": "USDC",
+  "stablecoin_decimals": 6,
+  "pool_address": "0x...",
+  "dex": "uniswap_v3",
+  "pool_version": "v3"
+}
+```
+
+### Почему
+
+Scanner не должен каждый цикл делать сложные SQL-запросы или RPC-запросы за метаданными.
+
+Иначе:
+
+- растет нагрузка;
+- появляются Windows WAL проблемы;
+- замедляется цикл.
+
+### Как реализовать
+
+1. В `pool_refresh_task.py` расширить SQL.
+
+2. Добавить join:
+
+```sql
+LEFT JOIN stablecoins sc
+    ON sc.address = p.stablecoin_address
+   AND sc.network = p.network
+```
+
+3. Добавить decimals через `TokenMetaService`.
+
+4. Писать расширенный JSON.
+
+5. В scanner использовать новые поля.
+
+6. Добавить тест:
+
+- cache содержит stablecoin_coin;
+- cache содержит decimals;
+- scanner пропускает пул, если decimals нет.
+
+---
+
+## B6. Refresh пишет напрямую в active DB, минуя atomic replace из плана
+
+### Сейчас
+
+`PoolRefreshTask` использует:
+
+```python
+BEGIN IMMEDIATE;
+DELETE FROM pools;
+DELETE FROM mexc_assets;
+DELETE FROM stablecoins;
+INSERT ...
+COMMIT;
+```
+
+`StateRepository.atomic_replace` не используется.
+
+### Должно быть
+
+Нужно выбрать один официальный подход:
+
+Вариант 1 — вернуть atomic replace:
+
+```text
+temp DB → validation → backup → replace
+```
+
+Вариант 2 — оставить direct commit, но добавить:
+
+```text
+backup
+validation
+stale pool protection
+refresh_log
+busy_timeout
+```
+
+### Почему
+
+План требует atomic replace и backup.
+
+Direct commit сам по себе не плох, но сейчас он не имеет всех защит.
+
+### Как реализовать
+
+Рекомендую для надёжности:
+
+1. Оставить direct commit как Windows-safe.
+
+2. Добавить:
+
+```python
+backup_manager.create_backup()
+```
+
+3. Добавить stale pool protection.
+
+4. Добавить запись в `refresh_log`.
+
+5. Добавить validation после commit:
+
+```python
+SELECT COUNT(*) FROM pools;
+SELECT COUNT(*) FROM mexc_assets;
+SELECT COUNT(*) FROM stablecoins;
+```
+
+6. Если validation fails, поднять ошибку.
+
+7. Обновить `FINAL_REPORT.md`, что atomic replace заменён на direct transaction с backup.
+
+---
+
+## B7. `refresh_log` не используется
+
+### Сейчас
+
+Schema содержит:
+
+```sql
+CREATE TABLE IF NOT EXISTS refresh_log (...)
+```
+
+Но refresh не пишет туда.
+
+### Должно быть
+
+Каждый refresh должен писать:
+
+```text
+started_at
+finished_at
+status
+error
+pools_count
+mexc_assets_count
+stablecoins_count
+```
+
+### Почему
+
+Нужна диагностика:
+
+- когда был последний refresh;
+- сколько пулов найдено;
+- были ли ошибки;
+- почему пулов стало меньше.
+
+### Как реализовать
+
+1. В `PoolRefreshTask._run_refresh_inner` в начале:
+
+```python
+INSERT INTO refresh_log (started_at, status) VALUES (?, 'running')
+```
+
+2. В конце:
+
+```python
+UPDATE refresh_log
+SET finished_at=?, status=?, error=?, pools_count=?, ...
+WHERE id=?
+```
+
+3. При ошибке:
+
+```python
+status='failed'
+error=str(exc)
+```
+
+4. Добавить тест:
+
+- успешный refresh пишет `completed`;
+- failed refresh пишет `failed`;
+- можно выбрать последнюю запись.
+
+---
+
+## B8. Candidate filtering по объёму может противоречить принципу «без фильтров»
+
+### Сейчас
+
+В settings:
+
+```python
+MIN_USDT_VOLUME_24H = 50000
+MAX_CANDIDATES = 200
+```
+
+Tokens с низким объёмом отбрасываются.
+
+### Должно быть
+
+Нужно явно решить:
+
+1. Это фильтр токенов, а не пулов.
+2. Он должен быть опциональным.
+3. По умолчанию лучше не отбрасывать, а ограничивать только лимитом кандидатов.
+
+### Почему
+
+В плане запрещено фильтровать пулы по liquidity/volume/age.
+
+Фильтрация токенов по объёму — это компромисс для производительности, но он может пропустить арбитраж в низколиквидных токенах.
+
+### Как реализовать
+
+1. Изменить default:
+
+```python
+MIN_USDT_VOLUME_24H = 0
+```
+
+2. `MAX_CANDIDATES` оставить, но использовать как ranking limit.
+
+3. В README объяснить:
+
+```text
+MIN_USDT_VOLUME_24H — optional performance filter, not required by core logic.
+```
+
+4. Добавить warning, если фильтр включён.
+
+5. Добавить тест:
+
+- при `MIN_USDT_VOLUME_24H=0` токен с нулевым объёмом проходит;
+- при `MIN_USDT_VOLUME_24H=50000` не проходит.
+
+---
+
+# C. RPC, adapters, performance
+
+---
+
+## C1. `RpcClient.multicall` не является настоящим multicall
+
+### Сейчас
+
+В `clients/rpc_client.py`:
+
+```python
+async def multicall(self, calls, ...):
+    for to, data in calls:
+        result = await self.eth_call(...)
+```
+
+Это последовательные вызовы, а не batching.
+
+### Должно быть
+
+Нужно использовать Multicall3:
+
+```text
+tryAggregate((target, callData)[])
+```
+
+### Почему
+
+Multicall нужен для:
+
+- decimals;
+- token0/token1;
+- pool fee;
+- reserves;
+- factory discovery.
+
+Без batching RPC расход растёт в десятки раз.
+
+### Как реализовать
+
+1. Создать:
+
+```text
+clients/multicall_client.py
+```
+
+2. Использовать:
+
+```python
+abi/multicall.py
+```
+
+3. Для каждой сети брать адрес:
+
+```python
+NETWORKS[network].multicall3
+```
+
+Для Robinhood:
+
+```python
+l2_multicall
+```
+
+4. Реализовать:
+
+```python
+async def aggregate(calls: list[tuple[str, str]]) -> list[bool, bytes]
+```
+
+5. Использовать `tryAggregate`, чтобы одна ошибка не ломала весь батч.
+
+6. Добавить тесты:
+
+- 50 вызовов группируются в один eth_call;
+- если один call fails, другие возвращаются;
+- batch size ограничен `RPC_MULTICALL_BATCH_SIZE`.
+
+---
+
+## C2. V3 adapter каждый раз вызывает `fee()`
+
+### Сейчас
+
+В `dex/v3_adapter.py`:
+
+```python
+fee = await pool.functions.fee().call()
+```
+
+Это делается на каждый quote.
+
+### Должно быть
+
+Fee пула — неизменяемое значение.
+
+Его нужно кэшировать:
+
+```python
+(network, pool_address) -> fee
+```
+
+### Почему
+
+Лишний RPC call на каждый quote.
+
+При 1000 пулов это +1000 RPC calls за цикл.
+
+### Как реализовать
+
+1. В `V3Adapter` добавить:
+
+```python
+self._fee_cache: dict[tuple[str, str], Decimal] = {}
+```
+
+2. Метод:
+
+```python
+async def _get_fee(self, network, pool_address):
+    key = (network, pool_address)
+    if key in self._fee_cache:
+        return self._fee_cache[key]
+    fee = await pool.functions.fee().call()
+    self._fee_cache[key] = Decimal(fee)
+    return self._fee_cache[key]
+```
+
+3. Использовать в quote и `get_pool_fee_bps`.
+
+4. Добавить тест:
+
+- первый вызов делает RPC;
+- второй вызов использует cache.
+
+---
+
+## C3. V2 fallback делает несколько RPC calls без кэша
+
+### Сейчас
+
+`V2Adapter._quote_from_reserves` вызывает:
+
+```python
+token0 = await pair.functions.token0().call()
+reserves = await pair.functions.getReserves().call()
+```
+
+`token0()` можно кэшировать.
+
+### Должно быть
+
+- `token0`, `token1` — кэшировать навсегда;
+- `getReserves` — свежий на каждый quote, если используется fallback.
+
+### Почему
+
+`token0` не меняется.
+
+Нет смысла запрашивать его каждый раз.
+
+### Как реализовать
+
+1. Добавить в V2Adapter:
+
+```python
+self._token0_cache: dict[tuple[str, str], str] = {}
+```
+
+2. Метод:
+
+```python
+async def _get_token0(self, network, pool_address):
+    ...
+```
+
+3. `getReserves` оставить без кэша или с очень коротким TTL 1-2 секунды.
+
+4. Добавить тест:
+
+- token0 кэшируется;
+- reserves запрашиваются снова.
+
+---
+
+## C4. DexScreener source не имеет rate limiter
+
+### Сейчас
+
+`DexScreenerSource` имеет cache, но не имеет rate limiter.
+
+### Должно быть
+
+Нужен limiter:
+
+```python
+requests_per_minute=300
+burst=5
+```
+
+### Почему
+
+В плане:
+
+```text
+DexScreener rate limit: 300 rpm
+```
+
+При большом числе кандидатов можно быстро получить 429.
+
+### Как реализовать
+
+1. В `DexScreenerSource.__init__`:
+
+```python
+self._rate_limiter = SimpleRateLimiter(
+    requests_per_minute=300,
+    burst=5,
+)
+```
+
+2. Перед HTTP request:
+
+```python
+await self._rate_limiter.acquire()
+```
+
+3. Добавить тест:
+
+- limiter вызывается перед request;
+- cache hit не делает request.
+
+---
+
+## C5. RPC calls не имеют retry/backoff
+
+### Сейчас
+
+`RpcClient._post` делает один запрос.
+
+При timeout или 429 сразу ошибка.
+
+### Должно быть
+
+Нужен retry для transient errors:
+
+```text
+timeout
+429
+5xx
+connection reset
+```
+
+### Почему
+
+RPC — нестабильная внешняя зависимость.
+
+Один timeout не должен ломать quote или discovery.
+
+### Как реализовать
+
+1. Добавить:
+
+```text
+utils/retry.py
+```
+
+2. Реализовать:
+
+```python
+async def retry_async(func, attempts, backoff_initial_sec, backoff_max_sec):
+    ...
+```
+
+3. Использовать в:
+
+```python
+RpcClient._post
+DexScreenerSource.fetch_pools_by_token
+```
+
+4. Не retry на:
+
+```text
+invalid address
+revert
+invalid params
+```
+
+5. Добавить тесты:
+
+- retry при timeout;
+- no retry при RpcError с invalid params;
+- backoff увеличивается.
+
+---
+
+## C6. Gas estimate слишком грубый
+
+### Сейчас
+
+`FeeService._estimate_gas_cost_usd` использует:
+
+```python
+gas_units = Decimal("200000")
+```
+
+для всех сетей и DEX.
+
+### Должно быть
+
+Нужно использовать:
+
+1. `gasEstimate` из V3 QuoterV2, если доступен.
+2. Разумные default по DEX/version/network.
+3. Возможность конфигурации.
+
+### Почему
+
+На разных сетях и DEX газ разный.
+
+Ethereum mainnet swap может быть 150k-250k.
+
+Arbitrum имеет другую модель оплаты.
+
+Фиксированные 200k могут как завысить, так и занизить fee.
+
+### Как реализовать
+
+1. В `DexQuoteResult` добавить:
+
+```python
+gas_estimate: int | None
+```
+
+2. V3 adapter должен возвращать `gasEstimate` из quoter:
+
+```python
+result[3]
+```
+
+3. FeeService:
+
+```python
+if quote.gas_estimate:
+    gas_units = quote.gas_estimate
+else:
+    gas_units = default_gas_units(network, dex_version)
+```
+
+4. Defaults:
+
+```python
+v2: 150000
+v3: 200000
+v4: 250000
+```
+
+5. Добавить тесты:
+
+- используется gasEstimate;
+- если его нет, используется default.
+
+---
+
+## C7. Adapters возвращают `Decimal("0")` при любой ошибке
+
+### Сейчас
+
+V2/V3 adapters:
+
+```python
+except Exception:
+    return Decimal("0")
+```
+
+### Должно быть
+
+Adapter должен возвращать структурированный результат:
+
+```python
+DexQuoteResult(
+    success=False,
+    error="rpc_timeout",
+)
+```
+
+### Почему
+
+Ноль может означать:
+
+- нет ликвидности;
+- revert;
+- RPC error;
+- timeout;
+- неправильный adapter;
+- insufficient input amount.
+
+Scanner должен различать эти случаи.
+
+### Как реализовать
+
+1. Изменить `BaseDexAdapter.quote_exact_input`:
+
+```python
+async def quote_exact_input(...) -> DexQuoteResult:
+```
+
+2. Обновить V2/V3 adapters.
+
+3. В scanner:
+
+```python
+quote = await adapter.quote_exact_input(...)
+if not quote.success:
+    quotes_failed += 1
+    return
+```
+
+4. Добавить warnings:
+
+```python
+quote_revert
+rpc_error
+no_liquidity
+```
+
+5. Обновить тесты.
+
+---
+
+## C8. Scanner блокирует event loop через `time.sleep`
+
+### Сейчас
+
+`Scanner._load_pools_json`:
+
+```python
+time.sleep(0.5)
+```
+
+Это синхронный sleep внутри async цикла.
+
+### Должно быть
+
+Либо убрать retry, либо использовать:
+
+```python
+await asyncio.sleep(0.5)
+```
+
+### Почему
+
+`time.sleep` блокирует весь event loop.
+
+В это время:
+
+- не работают HTTP requests;
+- не работают RPC;
+- не обновляется GUI;
+- scanner loop замирает.
+
+### Как реализовать
+
+1. Так как `os.replace` атомарный, retry обычно не нужен.
+
+2. Упростить:
+
+```python
+def _load_pools_json(self):
+    try:
+        with open(self._pools_cache_path, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return []
+    except json.JSONDecodeError:
+        logger.warning("pools_cache_invalid")
+        return []
+```
+
+3. Если нужен retry, сделать метод async:
+
+```python
+async def _load_pools_json_async(self):
+    await asyncio.sleep(0.5)
+```
+
+4. Добавить тест:
+
+- нет файла → [];
+- битый JSON → [];
+- валидный JSON → list.
+
+---
+
+## C9. SQLite вызовы синхронные и могут блокировать async loop
+
+### Сейчас
+
+Используется:
+
+```python
+import sqlite3
+```
+
+В async-коде:
+
+```python
+conn = sqlite3.connect(...)
+conn.execute(...)
+```
+
+### Должно быть
+
+Либо:
+
+```python
+aiosqlite
+```
+
+либо:
+
+```python
+asyncio.to_thread(...)
+```
+
+### Почему
+
+Запись нескольких тысяч пулов может заблокировать event loop на сотни миллисекунд или секунды.
+
+### Как реализовать
+
+Минимальный вариант:
+
+1. Обернуть тяжёлые DB-операции:
+
+```python
+await asyncio.to_thread(self._write_db_sync, ...)
+```
+
+2. Позже перейти на `aiosqlite`.
+
+3. Добавить тест, что refresh не блокирует loop можно через параллельный `asyncio.sleep`.
+
+---
+
+# D. Price service, MEXC, fees
+
+---
+
+## D1. PriceService не использует TTL для защиты от лишних refresh
+
+### Сейчас
+
+`PriceService` имеет:
+
+```python
+self._cache_ttl_sec = cache_ttl_sec
+```
+
+Но scanner вызывает:
+
+```python
+await self._price_service.refresh_all_prices()
+```
+
+каждый цикл без проверки TTL.
+
+### Должно быть
+
+Refresh должен происходить не чаще, чем:
+
+```python
+MEXC_PRICE_CACHE_TTL_SEC
+```
+
+### Почему
+
+Если `SCAN_INTERVAL_SEC` уменьшить, можно превысить MEXC rate limit.
+
+### Как реализовать
+
+1. Добавить:
+
+```python
+def is_cache_expired(self) -> bool:
+    return time.time() - self._updated_at > self._cache_ttl_sec
+```
+
+2. Метод:
+
+```python
+async def refresh_if_expired(self):
+    if self.is_cache_expired():
+        await self.refresh_all_prices()
+```
+
+3. В scanner использовать:
+
+```python
+await self._price_service.refresh_if_expired()
+```
+
+4. Добавить тест:
+
+- cache свежий → refresh не вызывается;
+- cache старый → refresh вызывается.
+
+---
+
+## D2. Price refresh failure ломает весь scanner cycle
+
+### Сейчас
+
+Если:
+
+```python
+await self._price_service.refresh_all_prices()
+```
+
+падает, весь `_execute_cycle` падает.
+
+### Должно быть
+
+Если цены не удалось обновить, но есть старый cache:
+
+```text
+использовать старый cache
+добавить warning
+```
+
+### Почему
+
+MEXC может временно вернуть 5xx.
+
+Scanner не должен полностью останавливаться.
+
+### Как реализовать
+
+1. В scanner:
+
+```python
+try:
+    await self._price_service.refresh_if_expired()
+except Exception as exc:
+    logger.warning("price_refresh_failed_using_stale_cache: %s", exc)
+```
+
+2. Если цен вообще нет:
+
+```python
+return {"skipped": True, "reason": "no_prices"}
+```
+
+3. Добавить тест:
+
+- refresh падает, но старый cache используется;
+- если cache пуст, cycle skipped.
+
+---
+
+## D3. MEXC authentication нужно проверить отдельно
+
+### Сейчас
+
+`MexcClient._signed_request` использует:
+
+```python
+timestamp
+signature
+X-MEXC-APIKEY
+```
+
+Но нет отдельного теста на реальный signed endpoint.
+
+### Должно быть
+
+Нужен integration test:
+
+```text
+GET /api/v3/capital/config/getall
+```
+
+с реальными ключами.
+
+### Почему
+
+Если подпись неверная, бот не получит assets.
+
+### Как реализовать
+
+1. В `tests/api_tests/test_mexc_api.py` уже есть skeleton.
+
+2. Добавить проверки:
+
+- HTTP 200;
+- response list;
+- USDT exists;
+- USDC exists;
+- networkList exists;
+- contract field exists.
+
+3. Обработать ошибки:
+
+```text
+-1022 invalid signature
+timestamp outside server time window
+```
+
+4. В `MexcClient` добавить понятные ошибки:
+
+```python
+raise MexcAuthError(...)
+```
+
+---
+
+## D4. MEXC deposit fee требует уточнения
+
+### Сейчас
+
+В fee model есть:
+
+```python
+mexc_deposit_fee_usd
+```
+
+Но обычно MEXC deposit fee = 0.
+
+### Должно быть
+
+Нужно явно указать:
+
+```text
+MEXC deposit fee = 0 by default
+```
+
+или брать из API, если доступно.
+
+### Почему
+
+Если deposit fee нет, не нужно его выдумывать.
+
+Если есть blockchain deposit cost, это отдельный компонент.
+
+### Как реализовать
+
+1. В `FeeService` установить:
+
+```python
+mexc_deposit_fee_usd = Decimal("0")
+```
+
+2. В README написать:
+
+```text
+MEXC deposit fee is assumed 0 unless exchange policy changes.
+```
+
+3. Если позже API даст deposit fee — добавить поле.
+
+---
+
+# E. Security
+
+---
+
+## E1. Token security checker почти заглушка
+
+### Сейчас
+
+`TokenSecurityChecker.check` возвращает:
+
+```python
+warnings.append("security_check_unavailable: mintable check not implemented")
+warnings.append("security_check_unavailable: blacklist check not implemented")
+...
+```
+
+### Должно быть
+
+Нужно реализовать базовые selector checks:
+
+```text
+owner()
+mint(address,uint256)
+blacklist(address)
+pause()
+transfer fee detection
+```
+
+### Почему
+
+Иначе security module формальный.
+
+### Как реализовать
+
+1. Создать словарь selectors:
+
+```python
+OWNER_SELECTOR = "0x8da5cb5b"
+PAUSE_SELECTOR = "0x8456cb59"
+```
+
+2. Для каждого selector делать `eth_call`.
+
+3. Если вызов успешен — warning.
+
+4. Если revert — no warning.
+
+5. Если RPC error — warning:
+
+```text
+security_check_unavailable
+```
+
+6. Добавить тесты с mock RPC.
+
+---
+
+## E2. Fee-on-transfer detection отсутствует
+
+### Сейчас
+
+Метод:
+
+```python
+_check_fee_on_transfer
+```
+
+всегда возвращает `False`.
+
+### Должно быть
+
+Нужен хотя бы консервативный warning.
+
+### Почему
+
+Fee-on-transfer токен ломает arbitrage:
+
+```text
+DEX output != amount received on MEXC
+```
+
+### Как реализовать
+
+Варианты:
+
+1. Симулировать `transfer` через eth_call и сравнить balanceOf до/после.
+
+2. Если нет возможности — добавлять:
+
+```python
+"fee_on_transfer_not_verified"
+```
+
+для всех неизвестных токенов.
+
+3. Позже использовать multicall:
+
+```text
+balanceOf(pool)
+transfer(...)
+balanceOf(recipient)
+```
+
+4. Если `received < transferred`, warning:
+
+```text
+fee_on_transfer_detected
+```
+
+---
+
+## E3. Warnings должны быть структурированными или явно строковыми
+
+### Сейчас
+
+В плане:
+
+```python
+warnings: list[SecurityWarning]
+```
+
+В проекте:
+
+```python
+warnings: list[str]
+```
+
+### Должно быть
+
+Нужно выбрать один формат.
+
+Рекомендую оставить строки для простоты, но добавить стандартный формат:
+
+```text
+severity:type:message
+```
+
+или JSON-объект.
+
+### Почему
+
+Строки проще для GUI и JSONL.
+
+Но нужна консистентность.
+
+### Как реализовать
+
+Вариант минимальный:
+
+1. Оставить `list[str]`.
+
+2. Ввести стандарт:
+
+```text
+high:mintable
+medium:ownable
+info:security_check_unavailable
+```
+
+3. Обновить security checkers.
+
+4. Обновить GUI, если нужно.
+
+5. Обновить README.
+
+---
+
+# F. Tests
+
+---
+
+## F1. Некоторые unit-тесты сломаны по синтаксису
+
+### Сейчас
+
+В `tests/unit/test_rate_limiter.py` есть конструкции:
+
+```python
+asyncio.run(self._do_acquire(limiter))
+
+async def _do_acquire(self, limiter):
+    ...
+```
+
+Метод вызывается до объявления.
+
+Также в некоторых тестах `FeeBreakdown` создаётся с параметром:
+
+```python
+total=Decimal("0.06")
+```
+
+Но `total` — метод, не поле.
+
+### Должно быть
+
+Тесты должны запускаться:
+
+```bash
+pytest -m "not integration" -q
+```
+
+### Почему
+
+Сейчас тесты могут падать, значит CI/проверка ненадёжны.
+
+### Как реализовать
+
+1. В `test_rate_limiter.py` вынести async helper отдельно:
+
+```python
+async def _acquire_once(limiter):
+    await limiter.acquire()
+```
+
+2. Использовать:
+
+```python
+asyncio.run(_acquire_once(limiter))
+```
+
+3. Убрать `total=` из `FeeBreakdown(...)`.
+
+4. Проверять total отдельно:
+
+```python
+assert fees.total() == Decimal("0.06")
+```
+
+5. Прогнать:
+
+```bash
+pytest tests/unit -q
+```
+
+---
+
+## F2. Нужны unit-тесты для decimals
+
+### Сейчас
+
+Нет тестов, проверяющих:
+
+```text
+USDC 6 decimals
+TOKEN 18 decimals
+amount conversion
+```
+
+### Должно быть
+
+Добавить:
+
+```text
+tests/unit/test_token_meta.py
+tests/unit/test_amount_conversion.py
+```
+
+### Как реализовать
+
+1. Тест:
+
+```python
+floor_to_wei(Decimal("10"), 6) == 10_000_000
+floor_to_wei(Decimal("10"), 18) == 10_000_000_000_000_000_000
+```
+
+2. Тест:
+
+```python
+token_amount = Decimal(1_000_000_000) / Decimal(10**6)
+assert token_amount == Decimal("1000")
+```
+
+3. Тест scanner:
+
+- stablecoin_decimals=6;
+- amount_in=10_000_000.
+
+---
+
+## F3. Нужны тесты Direction B
+
+### Сейчас
+
+Scanner Direction B не тестирует, потому что не реализует.
+
+### Должно быть
+
+После реализации Direction B добавить тесты.
+
+### Как реализовать
+
+1. Mock adapter:
+
+```python
+quote_exact_input return stable_out
+```
+
+2. Mock profit calculator:
+
+```python
+calculate_direction_b return signal=True
+```
+
+3. Проверить:
+
+- вызывается quote token → stable;
+- вызывается calculate_direction_b;
+- пишется сигнал `MEXC_BUY_DEX_SELL`.
+
+---
+
+## F4. Нужны dry-run integration tests для известных пулов
+
+### Сейчас
+
+Есть API tests, но нет полного dry-run:
+
+```text
+MEXC price → DEX quote → decimals → profit
+```
+
+### Должно быть
+
+Добавить:
+
+```text
+tests/api_tests/test_dry_run_quotes.py
+```
+
+### Как реализовать
+
+Проверить известные пары:
+
+```text
+WETH/USDC Uniswap V3 Ethereum
+BNB/USDT PancakeSwap V2 BSC
+WMATIC/USDC Uniswap V3 Polygon
+ARB/USDC Uniswap V3 Arbitrum
+```
+
+Для каждого:
+
+1. Получить decimals.
+2. Сделать quote.
+3. Проверить:
+
+```python
+amount_out > 0
+```
+
+4. Проверить:
+
+```python
+no exception
+```
+
+5. Запуск только при:
+
+```bash
+RUN_INTEGRATION=1
+```
+
+---
+
+# G. Configuration, docs, GUI
+
+---
+
+## G1. `.env.example` и settings имеют расхождение по GeckoTerminal
+
+### Сейчас
+
+`.env.example`:
+
+```text
+POOL_SOURCE_PRIORITY=dexscreener,geckoterminal,onchain_factory
+```
+
+Settings default:
+
+```python
+"dexscreener,onchain_factory"
+```
+
+### Должно быть
+
+Нужно привести к одному default.
+
+### Почему
+
+Пользователь может не понять, включён GeckoTerminal или нет.
+
+### Как реализовать
+
+1. Выбрать default:
+
+```text
+dexscreener,onchain_factory
+```
+
+2. В `.env.example` закомментировать:
+
+```text
+# GeckoTerminal free tier rate-limits heavily.
+# POOL_SOURCE_PRIORITY=dexscreener,geckoterminal,onchain_factory
+```
+
+3. Обновить README.
+
+---
+
+## G2. Health/metrics endpoint получает stale metrics
+
+### Сейчас
+
+`metrics/health.py` имеет:
+
+```python
+_metrics_state
+```
+
+Но bot почти не вызывает:
+
+```python
+update_metrics(...)
+```
+
+GUI вызывает только:
+
+```python
+update_metrics(started_at=time.time())
+```
+
+### Должно быть
+
+Bot должен обновлять:
+
+```text
+signals_total
+scanner_cycles
+pools_cached
+mexc_assets
+pools_in_db
+stablecoins
+errors_seen
+last_scanner_cycle_ts
+last_signal_ts
+```
+
+### Почему
+
+Иначе `/metrics` показывает фиктивные данные.
+
+### Как реализовать
+
+1. В scanner после cycle:
+
+```python
+update_metrics(
+    scanner_cycles=...,
+    signals_total=...,
+    pools_cached=len(pool_list),
+    last_scanner_cycle_ts=time.time(),
+)
+```
+
+2. В refresh:
+
+```python
+update_metrics(
+    pools_in_db=written,
+    mexc_assets=len(assets),
+    stablecoins=total_stablecoin_records,
+)
+```
+
+3. В signal writer:
+
+```python
+update_metrics(last_signal_ts=time.time())
+```
+
+4. Добавить тест, что metrics обновляются.
+
+---
+
+## G3. Signals JSONL и performance JSONL растут бесконечно
+
+### Сейчас
+
+Файлы:
+
+```text
+data/signals.jsonl
+data/performance.jsonl
+```
+
+пишутся append-only.
+
+### Должно быть
+
+Нужна ротация:
+
+```text
+по размеру или по дате
+хранить последние N файлов
+```
+
+### Почему
+
+При долгой работе файлы могут занять гигабайты.
+
+### Как реализовать
+
+1. Создать:
+
+```text
+utils/jsonl_rotator.py
+```
+
+2. Логика:
+
+```text
+если файл больше max_size_mb:
+    signals.jsonl -> signals.1.jsonl
+    удалить старые signals.N.jsonl
+```
+
+3. Defaults:
+
+```text
+max_size_mb=50
+keep=5
+```
+
+4. Использовать в `SignalWriter` и `PerformanceLogger`.
+
+---
+
+## G4. GUI читает active DB без busy_timeout
+
+### Сейчас
+
+`gui/dashboard.py`:
+
+```python
+sqlite3.connect(str(db))
+```
+
+### Должно быть
+
+Нужно:
+
+```python
+sqlite3.connect(str(db), timeout=5)
+```
+
+или read-only mode.
+
+### Почему
+
+Во время refresh DB может быть заблокирована.
+
+GUI может падать или зависать.
+
+### Как реализовать
+
+1. В `_db_connect`:
+
+```python
+return sqlite3.connect(str(db), timeout=5)
+```
+
+2. Обернуть все query в try/except:
+
+```python
+except sqlite3.OperationalError:
+    return None
+```
+
+3. Опционально использовать URI:
+
+```text
+file:data/state/active.sqlite3?mode=ro
+```
+
+---
+
+## G5. V4 adapter не реализован, но должен безопасно пропускаться
+
+### Сейчас
+
+`V4Adapter` raises `NotImplementedError`.
+
+`AdapterFactory` для v4 возвращает None и warning.
+
+### Должно быть
+
+Scanner должен добавлять warning:
+
+```text
+v4_not_supported
+```
+
+и пропускать пул.
+
+### Почему
+
+V4 есть в registry.
+
+Нельзя, чтобы V4-пулы ломали cycle.
+
+### Как реализовать
+
+1. Если adapter is None:
+
+```python
+logger.debug("adapter_unavailable: %s %s", network, dex_id)
+quotes_failed += 1
+return
+```
+
+2. Если dex_id == "uniswap_v4":
+
+```python
+logger.info("v4_pool_skipped: %s", pool_address)
+```
+
+3. Не писать сигнал.
+
+4. В metrics считать:
+
+```text
+v4_pools_skipped
+```
+
+---
+
+## G6. Optional discovery sources являются заглушками
+
+### Сейчас
+
+```text
+defined_source.py
+dextools_source.py
+birdeye_source.py
+moralis_source.py
+covalent_source.py
+subgraph_source.py
+```
+
+все raise `SourceError`.
+
+### Должно быть
+
+Они не должны быть зарегистрированы, пока не реализованы.
+
+### Почему
+
+Если пользователь включит optional sources, refresh будет получать ошибки.
+
+### Как реализовать
+
+1. В `SourceManager` регистрировать только:
+
+```text
+dexscreener
+geckoterminal
+onchain_factory
+```
+
+2. Optional sources подключать только если:
+
+```python
+ENABLE_OPTIONAL_POOL_SOURCES=1
+```
+
+и API key задан.
+
+3. Если source не реализован:
+
+```python
+logger.warning("optional_source_not_implemented: %s", name)
+```
+
+и не вызывать.
+
+---
+
+## G7. STATE.md и FINAL_REPORT.md утверждают, что всё завершено
+
+### Сейчас
+
+Там:
+
+```text
+Completed.
+No blockers.
+All phases complete.
+```
+
+Но есть критические gaps:
+
+- decimals;
+- Direction B;
+- security integration;
+- MEXC withdraw fees;
+- backup in refresh;
+- multicall;
+- pool version detection.
+
+### Должно быть
+
+Нужно обновить статус.
+
+### Почему
+
+Иначе вводятся в заблуждение будущие разработчики.
+
+### Как реализовать
+
+1. Добавить в `STATE.md`:
+
+```markdown
+## Critical rework required
+- [ ] Token/stablecoin decimals
+- [ ] Direction B scanner
+- [ ] MEXC withdraw fees
+- [ ] Security checks integration
+- [ ] Refresh backup and stale pool protection
+- [ ] Pool version detection
+- [ ] Multicall batching
+```
+
+2. В `FINAL_REPORT.md` добавить раздел:
+
+```markdown
+## Known gaps before production
+```
+
+3. После исправления пунктов обновить статус.
+
+---
+
+# H. Рекомендуемый порядок выполнения
+
+---
+
+## Этап 1: Деньги и сигналы
+
+Выполнить:
+
+```text
+A1 decimals
+A2 Direction B
+A3 quote asset mismatch
+A4 MEXC withdraw fees
+A5 DEX pool fee accounting
+A6 security integration
+```
+
+Без этого сигналы нельзя считать достоверными.
+
+---
+
+## Этап 2: Корректность discovery
+
+Выполнить:
+
+```text
+A7 V3 factory fee encoding
+A11 adapter version selection
+A12 pool version detection
+B1 active stablecoins
+B2 duplicate discovery
+B3 valid pool fallback
+B4 onchain registry refresh
+B5 pools cache schema
+```
+
+---
+
+## Этап 3: Storage reliability
+
+Выполнить:
+
+```text
+A8 stale pool protection
+A9 backup before refresh
+B6 direct commit hardening
+B7 refresh_log
+```
+
+---
+
+## Этап 4: RPC performance
+
+Выполнить:
+
+```text
+A10 Web3 cache + rate limit
+C1 multicall
+C2 V3 fee cache
+C3 V2 token0 cache
+C4 DexScreener rate limiter
+C5 retry/backoff
+C6 gas estimate
+C7 quote result model
+C8 remove blocking sleep
+C9 async DB
+```
+
+---
+
+## Этап 5: Тесты и документация
+
+Выполнить:
+
+```text
+F1 fix broken tests
+F2 decimals tests
+F3 Direction B tests
+F4 dry-run integration
+G7 update docs
+```
+
+---
+
+# Минимальный чек-лист «можно ли верить сигналу»
+
+Сейчас проект нельзя считать production-ready для достоверных арбитражных сигналов, пока не закрыты эти пункты:
+
+```text
+[ ] Реальные decimals токена и стейблкоина.
+[ ] Amount_in считается с правильными decimals.
+[ ] Direction A и Direction B считаются.
+[ ] Quote asset сигнала совпадает с реальным MEXC quote asset.
+[ ] MEXC withdraw fee учитывается.
+[ ] DEX pool fee не учитывается дважды.
+[ ] Security checks вызываются и прикрепляются к сигналу.
+[ ] Pool version определяется до выбора adapter.
+[ ] Refresh не удаляет рабочие пулы при ошибке discovery.
+[ ] Refresh делает backup.
+[ ] RPC quotes проходят rate limiter.
+[ ] Multicall используется для массовых view-запросов.
+```
+
+---
+
+# Краткая оценка текущего состояния
+
+## Что сделано хорошо
+
+1. Структура проекта соответствует плану.
+2. Есть discovery failover.
+3. Есть DexScreener/GeckoTerminal/on-chain factory.
+4. Есть SQLite schema.
+5. Есть GUI.
+6. Есть тесты.
+7. Есть performance JSONL.
+8. Есть health endpoint.
+9. Есть Decimal для денег.
+10. Есть security-модули как заготовка.
+
+## Что критически нужно доработать
+
+1. **Decimals** — сейчас расчёты могут быть неверны на порядки.
+2. **Direction B** — отсутствует в scanner.
+3. **MEXC withdraw fees** — не учитываются.
+4. **Security checks** — не вызываются.
+5. **Pool version detection** — отсутствует.
+6. **Refresh backup/stale protection** — отсутствует.
+7. **Multicall** — не реализован.
+8. **RPC rate limiting для quotes** — отсутствует.
+
+---
+
+Если нужно, следующим шагом я могу превратить этот ревью-план в:
+
+1. **пошаговый task list для автономного агента**;
+2. **промты для qwen3-3.5 по каждому пункту**;
+3. **приоритизированный backlog с acceptance criteria**;
+4. **сначала diff по самому критичному пункту A1 — decimals**.
+
+### USER
+Вот лог последнего запуска. Учти его в составлении более детального ревью-плана
+
+### ASSISTANT
+# Детальный ревью-план с учётом лога запуска
+
+Повелитель, проанализировал лог. Ниже — переработанный ревью-план. Каждый пункт привязан к конкретным строкам лога.
+
+---
+
+## Экспресс-диагноз по логу
+
+Запуск `16:17:43 → 16:25:35` (≈8 минут):
+
+| Метрика | Значение | Оценка |
+|---|---|---|
+| MEXC assets | 5858 | OK |
+| Candidates | 200 (из 1060) | OK |
+| Pools discovered | 370 | OK |
+| Refresh duration | ~3.5 мин | Медленно |
+| Scanner cycle duration | ~4.3 мин | Критично (интервал 60с) |
+| Quotes OK | 235 / 370 | 63% |
+| Signals | **36** | **Все ложные** |
+| Max "profit" | **12 611 676%** (RAIN) | Абсурд |
+| Unclosed sessions | **~100+** | Утечка |
+| API key в логах | **Да** | Утечка |
+
+---
+
+## P0 — Критические (ложные сигналы, безопасность)
+
+---
+
+### P0-1. Alchemy API ключ виден в логах
+
+**Сейчас (из лога):**
+```
+httpx: HTTP Request: POST https://bnb-mainnet.g.alchemy.com/v2/ALCHEMY_KEY_1_REDACTED "HTTP/1.1 200 OK"
+```
+Ключ `ALCHEMY_KEY_1_REDACTED` виден в каждой строке. За цикл ~500+ таких строк. Если лог попадёт в GUI, файл, или будет отправлен — ключ скомпрометирован.
+
+Также видна MEXC signature:
+```
+GET https://api.mexc.com/api/v3/capital/config/getall?timestamp=...&signature=b3669eb797cf...
+```
+
+**Должно быть:**
+```
+httpx: HTTP Request: POST https://bnb-mainnet.g.alchemy.com/v2/***MASKED*** "HTTP/1.1 200 OK"
+```
+Или httpx-логи полностью отключены.
+
+**Почему:**
+В плане (раздел 24, utils/logging.py) прямо сказано: *"URLs with keys are masked before logging"*. Функция `mask_url` существует, но не применяется к httpx-логам. httpx логирует на уровне `INFO` через свой logger, минуя `mask_url`.
+
+**Как реализовать (для junior):**
+
+1. Открыть `utils/logging.py`, в `setup_logging()` добавить:
+```python
+logging.getLogger("httpx").setLevel(logging.WARNING)
+```
+Это отключит INFO-логи httpx (URL, status). Ошибки (WARNING/ERROR) останутся.
+
+2. Альтернативно — оставить INFO, но добавить фильтр:
+```python
+class MaskUrlFilter(logging.Filter):
+    def filter(self, record):
+        if hasattr(record, 'msg') and isinstance(record.msg, str):
+            record.msg = mask_url(record.msg)
+        return True
+
+logging.getLogger("httpx").addFilter(MaskUrlFilter())
+```
+
+3. Для MEXC signature — в `clients/mexc_client.py` не логировать signed URL. httpx WARNING достаточно.
+
+4. Проверка: запустить бот, убедиться что в логе нет `/v2/I0pM` и `signature=`.
+
+---
+
+### P0-2. Decimals: amount_in завышен в 10¹² раз → все сигналы ложные
+
+**Сейчас (из лога):**
+```json
+{"token_coin": "RAIN", "dex_amount_out": "90006494527545687398345133",
+ "net_profit_pct": "12611676.45343915757451910741", "full_cycle": true}
+```
+```json
+{"token_coin": "ARB", "dex_amount_out": "6421177549960300964022461",
+ "net_profit_pct": "5336335.751648162397598315021"}
+```
+
+В `scanner/scanner.py`:
+```python
+base_amount_wei = int(settings.BASE_AMOUNT_USD * Decimal(10**18))
+# = 10 * 10^18 = 10^19
+```
+
+USDC на Ethereum имеет **6 decimals**. Реальный amount_in должен быть:
+```
+10 * 10^6 = 10_000_000
+```
+Но бот передаёт `10^19`. Это в **10¹³ раз больше**. DEX quote возвращает астрономический amount_out.
+
+Для RAIN: `90006494527545687398345133 / 10^18 = 9×10⁷` токенов × $0.014 = **$1.26M** "прибыли" на $10.
+
+**Должно быть:**
+```python
+stablecoin_decimals = pool["stablecoin_decimals"]  # 6 для USDC/USDT на ETH
+base_amount_raw = int(settings.BASE_AMOUNT_USD * Decimal(10 ** stablecoin_decimals))
+# = 10 * 10^6 = 10_000_000
+```
+
+**Почему:**
+USDT/USDC decimals различаются по сетям:
+- Ethereum: USDT=6, USDC=6
+- BSC: USDT=18, USDC=18
+- Polygon: USDT=6, USDC=6
+- Arbitrum: USDT=6, USDC=6
+
+Без реальных decimals **каждый** сигнал на Ethereum/Polygon/Arbitrum ложный.
+
+**Как реализовать (для junior):**
+
+1. Создать `services/token_meta_service.py`:
+```python
+class TokenMetaService:
+    def __init__(self, rpc_client_factory):
+        self._rpc = rpc_client_factory
+        self._cache: dict[tuple[str, str], int] = {}
+
+    async def get_decimals(self, network: str, address: str) -> int:
+        key = (network, address.lower())
+        if key in self._cache:
+            return self._cache[key]
+        rpc = self._rpc(network)
+        # ERC20 decimals() selector = 0x313ce567
+        result = await rpc.eth_call(to=address, data="0x313ce567")
+        decimals = int(result, 16)
+        self._cache[key] = decimals
+        return decimals
+```
+
+2. В `pool_refresh_task.py` после discovery, для каждого пула запросить decimals токена и стейблкоина. Записать в `pools_cache.json`:
+```json
+{"token_decimals": 18, "stablecoin_decimals": 6}
+```
+
+3. В `scanner.py` заменить:
+```python
+# БЫЛО:
+base_amount_wei = int(settings.BASE_AMOUNT_USD * Decimal(10**18))
+# СТАЛО:
+sc_dec = pool.get("stablecoin_decimals", 18)
+base_amount_raw = int(settings.BASE_AMOUNT_USD * Decimal(10 ** sc_dec))
+```
+
+4. В `profit_calculator.py` передавать реальные decimals:
+```python
+token_amount = dex_amount_out / Decimal(10 ** token_decimals)
+```
+
+5. Тест: USDC 6 decimals, base $10 → amount_in = 10_000_000. Не 10^19.
+
+---
+
+### P0-3. V2 router getAmountsOut игнорирует pool_address → одинаковые quotes
+
+**Сейчас (из лога):**
+4 разных пула GOLD(PAXG)/USDC на Ethereum вернули **идентичный** amount_out:
+```
+pool 0x5ae1... → 1148491659446597574
+pool 0xcc70... → 1148491659446597574
+pool 0xb431... → 1148491659446597574
+pool 0xc581... → 1148491659446597574
+```
+
+Аналогично LINK (2 пула), UNI (3 пула), PEPE (3 пула), SHIB (2 пула).
+
+В `dex/v2_adapter.py`:
+```python
+amounts = await router.functions.getAmountsOut(amount_in, path).call()
+```
+`path = [USDC, PAXG]`. Router ищет пару **сам**, игнорируя `pool_address`. Если на DEX одна пара USDC/PAXG — все 4 "пула" дают одинаковый результат.
+
+**Должно быть:**
+Для V2 использовать `pool_address` напрямую:
+1. Запросить `getReserves()` + `token0()` из **конкретного** пула.
+2. Рассчитать amount_out по формуле constant product с fee.
+3. Router `getAmountsOut` использовать только как fallback, и логировать что pool_address проигнорирован.
+
+Для V3: quoter уже привязан к fee tier конкретного пула, но нужно убедиться что `pool.functions.fee()` вызывается для **конкретного** pool_address.
+
+**Почему:**
+Если 4 пула дают одинаковый quote, бот:
+- Тратит 4× RPC calls впустую.
+- Генерирует 4 одинаковых сигнала.
+- Не может выбрать пул с лучшей ликвидностью.
+- В реальном trading отправил бы swap на пул с нулевой ликвидностью.
+
+**Как реализовать (для junior):**
+
+1. В `V2Adapter.quote_exact_input` **сначала** пробовать reserves из конкретного пула:
+```python
+async def quote_exact_input(self, network, pool_address, token_in, token_out, amount_in):
+    # 1. Try specific pool reserves FIRST
+    result = await self._quote_from_reserves(network, pool_address, token_in, token_out, Decimal(amount_in))
+    if result > 0:
+        return result
+    # 2. Fallback to router (warn: pool_address ignored)
+    logger.warning("v2_router_fallback: pool_address=%s ignored", pool_address)
+    return await self._quote_from_router(network, token_in, token_out, amount_in)
+```
+
+2. В `_quote_from_reserves` кэшировать `token0()` (не меняется):
+```python
+self._token0_cache: dict[str, str] = {}
+```
+
+3. Тест: два разных pool_address → два разных (или одинаковых, если reserves равны) результата. Но вызовы идут к **разным** контрактам.
+
+---
+
+### P0-4. Direction B отсутствует в scanner
+
+**Сейчас (из лога):**
+Все 36 сигналов:
+```json
+"direction": "DEX_BUY_MEXC_SELL"
+```
+Ни одного `"MEXC_BUY_DEX_SELL"`.
+
+В `scanner.py` `process_pool` вызывает только:
+```python
+result_a = await self._profit_calculator.calculate_direction_a(...)
+```
+Direction B не вызывается.
+
+**Должно быть:**
+Для каждого пула проверять оба направления. В плане (раздел 17, 20.1):
+```
+wallet → DEX → MEXC → wallet   (Direction A)
+wallet → MEXC → DEX → wallet   (Direction B)
+```
+
+**Почему:**
+Половина арбитражных возможностей теряется. Direction B часто прибыльнее когда DEX цена ниже MEXC.
+
+**Как реализовать (для junior):**
+
+1. В `scanner.py` `process_pool`, после Direction A, добавить:
+```python
+# Direction B: MEXC buy → DEX sell
+token_amount = settings.BASE_AMOUNT_USD / mexc_price_usd
+token_dec = pool.get("token_decimals", 18)
+token_amount_raw = int(token_amount * Decimal(10 ** token_dec))
+
+amount_out_b = await adapter.quote_exact_input(
+    network=network,
+    pool_address=pool_address,
+    token_in=token_address,       # token → stable
+    token_out=stablecoin_address,
+    amount_in=token_amount_raw,
+)
+if amount_out_b > 0:
+    result_b = await self._profit_calculator.calculate_direction_b(
+        network=network,
+        mexc_price_usd=mexc_price_usd,
+        dex_amount_out=amount_out_b,
+        stablecoin_decimals=pool.get("stablecoin_decimals", 18),
+    )
+    if result_b["signal"]:
+        await self._write_signal(..., result_b, ...)
+```
+
+2. Тест: mock adapter возвращает amount_out для обоих направлений. Проверяем что `calculate_direction_b` вызывается.
+
+---
+
+### P0-5. MEXC withdraw fee = 0 во всех сигналах
+
+**Сейчас (из лога):**
+```json
+"fees": {"mexc_withdraw_fee_usd": "0", "mexc_deposit_fee_usd": "0"}
+```
+Во всех 36 сигналах.
+
+В `scanner.py` `_write_signal` не передаёт withdraw fee. `ProfitCalculator.calculate_direction_a` имеет default `mexc_withdraw_fee_usd=Decimal("0")`.
+
+**Должно быть:**
+Для Direction A: withdraw fee стейблкоина (USDC/USDT) из MEXC capital config.
+Для Direction B: withdraw fee токена.
+
+Данные уже есть в DB:
+```sql
+SELECT withdraw_fee FROM stablecoins WHERE address = ? AND network = ?
+SELECT withdraw_fee FROM mexc_assets WHERE contract_address = ? AND network = ?
+```
+
+**Почему:**
+Если withdraw fee = $1, а "прибыль" = $0.50 — сигнал убыточный. Без учёта fee все сигналы завышены.
+
+**Как реализовать (для junior):**
+
+1. В `services/fee_service.py` добавить:
+```python
+async def get_withdraw_fee_usd(self, coin, network, price_usd):
+    # SELECT withdraw_fee FROM stablecoins/mexc_assets
+    # fee_usd = Decimal(withdraw_fee) * price_usd
+    # return fee_usd
+```
+
+2. В `scanner.py` перед `calculate_direction_a`:
+```python
+withdraw_fee = await self._fee_service.get_withdraw_fee_usd(
+    coin=quote_asset, network=network, price_usd=Decimal("1")
+)
+result_a = await self._profit_calculator.calculate_direction_a(
+    ..., mexc_withdraw_fee_usd=withdraw_fee
+)
+```
+
+3. Тест: withdraw_fee=0.5, price=1 → fee_usd=0.5. Net profit уменьшается на 0.5.
+
+---
+
+### P0-6. Security checks не вызываются
+
+**Сейчас (из лога):**
+```json
+"warnings": ["thin_liquidity_quote_unreliable"]
+```
+Единственный warning — из `scanner.py` (profit > 10%). Token/Pool security checkers не вызываются.
+
+В `scanner.py` нет импорта `TokenSecurityChecker`, `PoolSecurityChecker`, `WarningBuilder`.
+
+**Должно быть (план, раздел 19):**
+```
+Security-проверки выполняются только если пул уже показал прибыль.
+Если security-проверка дает warning:
+    signal is not removed
+    warning is attached
+```
+
+**Почему:**
+Без security checks сигнал на fee-on-transfer токен покажет "прибыль", но при реальном переводе токена на MEXC 10-50% сгорит.
+
+**Как реализовать (для junior):**
+
+1. В `main.py` создать checkers и передать в Scanner:
+```python
+token_checker = TokenSecurityChecker(rpc_client_factory=rpc_factory)
+pool_checker = PoolSecurityChecker(rpc_client_factory=rpc_factory)
+scanner = Scanner(..., token_security_checker=token_checker, pool_security_checker=pool_checker)
+```
+
+2. В `scanner.py` `_write_signal`, перед созданием `ArbitrageSignal`:
+```python
+token_warnings = await self._token_checker.check(network, pool["token_address"])
+pool_warnings = await self._pool_checker.check(network, pool["pool_address"])
+security_warnings = WarningBuilder.build_warnings(token_warnings, pool_warnings)
+warnings.extend(security_warnings)
+```
+
+3. Тест: mock checker возвращает `["mintable"]`. Сигнал пишется с warnings containing "mintable".
+
+---
+
+### P0-7. pool_version не определяется → adapter может быть неправильный
+
+**Сейчас (из лога):**
+```json
+"dex": "uniswap", "pool_version": ""
+```
+Во всех сигналах. `dex = "uniswap"` (без версии) из DexScreener.
+
+В `adapter_factory.py`:
+```python
+"uniswap": ["uniswap_v2", "uniswap_v3"],
+```
+Factory пробует `uniswap_v2` **первым**. Если V2 adapter создан — он используется даже для V3 пула.
+
+V2 adapter на V3 пуле: `getAmountsOut` может вернуть 0 или revert → fallback на reserves → `getReserves()` на V3 пуле вернёт мусор или 0.
+
+**Должно быть:**
+Определять версию пула при discovery или refresh. Использовать `PoolDetector` (уже существует в `dex/pool_detector.py`, но не используется).
+
+**Почему:**
+Из 370 пулов 319 получили adapter. Но какой adapter — V2 или V3 — неизвестно. Если V3 пул обрабатывается V2 adapter, quote неверный.
+
+**Как реализовать (для junior):**
+
+1. В `pool_refresh_task.py`, после discovery, для каждого пула:
+```python
+version = await pool_detector.detect_version(network, pool_address)
+pool.pool_version = version or ""
+```
+
+2. В `adapter_factory.py` изменить `get_adapter`:
+```python
+def get_adapter(self, network, dex_id, pool_version=None):
+    if pool_version == "v3":
+        candidates = [f"{dex_id}_v3"] if not dex_id.endswith("_v3") else [dex_id]
+    elif pool_version == "v2":
+        candidates = [f"{dex_id}_v2"] if not dex_id.endswith("_v2") else [dex_id]
+    else:
+        candidates = _DEX_ALIASES.get(dex_id, [dex_id])
+```
+
+3. В `scanner.py` передавать `pool_version`:
+```python
+adapter = self._adapter_factory.get_adapter(network, dex_id, pool.get("pool_version"))
+```
+
+4. Тест: pool_version="v3", dex_id="uniswap" → создаётся V3Adapter, не V2.
+
+---
+
+## P1 — Высокие (утечки, производительность)
+
+---
+
+### P1-1. Unclosed client sessions — утечка aiohttp
+
+**Сейчас (из лога):**
+```
+ERROR asyncio: Unclosed client session
+client_session: <aiohttp.client.ClientSession object at 0x00000209F46FBCB0>
+```
+~100+ таких ошибок за один цикл. Каждый `web3_factory` создаёт `AsyncWeb3(AsyncHTTPProvider(rpc_url))` → новый aiohttp session. Session не закрывается.
+
+**Должно быть:**
+Один `AsyncWeb3` на сеть, кэшированный. Sessions закрываются при shutdown.
+
+**Почему:**
+- Утечка файловых дескрипторов.
+- Утечка памяти.
+- При долгой работе (24ч+) процесс упадёт.
+- Засоряет лог ERROR-ами.
+
+**Как реализовать (для junior):**
+
+1. В `main.py` заменить `web3_factory`:
+```python
+self._web3_cache: dict[str, AsyncWeb3] = {}
+
+def web3_factory(network: str):
+    if network in self._web3_cache:
+        return self._web3_cache[network]
+    rpc_url = resolve_rpc_url(network)
+    if not rpc_url:
+        return None
+    w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(rpc_url))
+    self._web3_cache[network] = w3
+    return w3
+```
+
+2. В `shutdown()` закрыть:
+```python
+for w3 in self._web3_cache.values():
+    try:
+        await w3.provider.async_w3.manager.close()
+    except Exception:
+        pass
+self._web3_cache.clear()
+```
+
+3. Проверка: в логе нет "Unclosed client session".
+
+---
+
+### P1-2. Web3 quotes не проходят rate limiter
+
+**Сейчас:**
+`web3_factory` создаёт `AsyncWeb3` напрямую. `RpcClient` имеет `SimpleRateLimiter`, но web3 его не использует. 235 quotes × 2 RPC calls = ~470 calls за цикл без ограничений.
+
+**Должно быть:**
+Все RPC calls (включая web3 contract calls) проходят через rate limiter.
+
+**Почему:**
+Alchemy free tier = 300 compute units/sec. Без rate limiter можно получить 429 или бан.
+
+**Как реализовать (для junior):**
+
+Минимальный вариант: в `web3_factory` добавить middleware или обернуть вызовы.
+
+Проще: в `V2Adapter`/`V3Adapter` перед каждым `.call()` вызывать:
+```python
+await self._rate_limiter.acquire()
+```
+Передать `rate_limiter` в конструктор adapter из `main.py`.
+
+---
+
+### P1-3. Scanner cycle занимает 4+ минуты при интервале 60 сек
+
+**Сейчас (из лога):**
+```
+16:21:15 — scanner_cycle started (price refresh)
+16:25:35 — scanner_cycle finished
+```
+~4 мин 20 сек. `SCAN_INTERVAL_SEC=60`. Циклы идут непрерывно, без паузы.
+
+**Должно быть:**
+Цикл < 60 сек, или интервал увеличивается автоматически.
+
+**Почему:**
+- Quotes устаревают.
+- RPC лимит расходуется.
+- CPU/RPC нагрузка непрерывная.
+
+**Как реализовать (для junior):**
+
+1. Кэшировать `fee()` для V3 (не меняется):
+```python
+self._fee_cache: dict[str, int] = {}  # pool_address → fee
+```
+
+2. Кэшировать `token0()` для V2 (не меняется).
+
+3. Увеличить `SCANNER_MAX_CONCURRENCY` с 20 до 50 (если RPC позволяет).
+
+4. Использовать multicall для batch fee/decimals queries.
+
+5. После фикса P0-3 (V2 reserves вместо router) — меньше RPC calls.
+
+---
+
+### P1-4. Refresh занимает 3.5 минуты
+
+**Сейчас (из лога):**
+```
+16:17:45 — pool_refresh_started
+16:21:15 — pool_refresh_direct_commit: pools=370
+```
+200 кандидатов, ~3.5 мин. В основном DexScreener HTTP calls + onchain factory RPC calls.
+
+**Должно быть:**
+< 10 минут (по плану hourly refresh). 3.5 мин приемлемо, но можно ускорить.
+
+**Как реализовать:**
+- Группировать кандидатов по `(network, contract)` — не делать 2 запроса для USDT и USDC отдельно.
+- Onchain factory: использовать multicall вместо sequential eth_call.
+- V3 factory: исправить fee encoding (P0-8 ниже).
+
+---
+
+### P1-5. Onchain V3 factory fee encoding неправильный
+
+**Сейчас:**
+В `discovery/onchain_factory_source.py`:
+```python
+fee_hex = format(fee_bps * 100, "012x")  # 12 hex chars = 6 bytes
+```
+ABI требует uint24 = 32 bytes = 64 hex chars.
+
+В тесте `tests/api_tests/test_onchain_factory.py` правильно:
+```python
+fee_hex = format(fee_bps * 100, "064x")  # 64 hex chars
+```
+Но в production коде — `"012x"`.
+
+**Должно быть:**
+```python
+fee_hex = format(fee_bps * 100, "x").zfill(64)
+```
+
+**Почему:**
+Calldata короче ожидаемого → RPC возвращает ошибку или пустой результат → V3 пулы не находятся через onchain factory.
+
+**Как реализовать (для junior):**
+1. Открыть `discovery/onchain_factory_source.py`, метод `_check_v3_factory`.
+2. Заменить `"012x"` на `.zfill(64)`.
+3. Тест: `len(fee_hex) == 64`.
+
+---
+
+## P2 — Средние (качество данных, логика)
+
+---
+
+### P2-1. token_coin содержит скобки: `GOLD(PAXG)`
+
+**Сейчас (из лога):**
+```json
+"token_coin": "GOLD(PAXG)", "mexc_symbol": "GOLD(PAXG)USDT"
+```
+MEXC coin = `GOLD(PAXG)`. Символ `GOLD(PAXG)USDT` может не существовать как trading pair.
+
+**Должно быть:**
+Использовать реальный MEXC symbol. Если coin содержит скобки, проверить что price pair существует. Если нет — skip или warning.
+
+**Как реализовать:**
+1. В `price_service.get_price`, если symbol не найден, логировать warning.
+2. В `mexc_asset_service.select_candidate_tokens`, проверять что `f"{coin}USDT"` или `f"{coin}USDC"` есть в prices. Если coin содержит `(`, попробовать извлечь тикер из скобок: `PAXG`.
+
+---
+
+### P2-2. 36 сигналов за цикл — все ложные
+
+**Сейчас (из лога):**
+```
+scanner_cycle: pools=370 ... signals=36
+```
+36 сигналов с profit от 96% до 12 611 676%. Все из-за P0-2 (decimals).
+
+**Должно быть:**
+После фикса decimals: 0-3 сигнала за цикл (реалистично). Добавить sanity check:
+```python
+if net_profit_pct > Decimal("100"):
+    warnings.append("extreme_profit_likely_bug")
+```
+
+**Как реализовать:**
+1. В `scanner.py` `_write_signal`, добавить sanity check:
+```python
+if net_profit_pct > Decimal("50"):
+    warnings.append("extreme_profit_verify_manually")
+```
+2. После фикса P0-2 убедиться что сигналов < 5 за цикл.
+
+---
+
+### P2-3. Stablecoin registry не фильтрует по active networks
+
+**Сейчас:**
+`stablecoin_registry_service.build_registry` использует `asset.networks` (все), не `asset.active_networks()`.
+
+**Должно быть:**
+Только сети с `deposit_enable=True AND withdraw_enable=True`.
+
+**Как реализовать:**
+```python
+# БЫЛО:
+for network_asset in asset.networks:
+# СТАЛО:
+for network_asset in asset.active_networks():
+```
+
+---
+
+### P2-4. Refresh удаляет пулы при 0 новых (stale pool protection bypassed)
+
+**Сейчас:**
+`pool_refresh_task.py` пишет напрямую в active DB:
+```python
+conn.execute("DELETE FROM pools;")
+```
+Если discovery вернул 0 пулов — таблица пустая. Scanner теряет все пулы.
+
+`StateRepository.atomic_replace` имеет защиту (skip if temp=0, active>0), но не используется.
+
+**Должно быть:**
+Если new_pools=0 и old_pools>0 — не удалять старые.
+
+**Как реализовать:**
+```python
+old_count = conn.execute("SELECT COUNT(*) FROM pools").fetchone()[0]
+if written == 0 and old_count > 0:
+    logger.warning("keeping_stale_pools: old=%d new=0", old_count)
+    # Не удалять pools, только обновить assets/stablecoins
+```
+
+---
+
+### P2-5. Backup не создаётся перед refresh
+
+**Сейчас:**
+`BackupManager` создан в `main.py`, передан в `StateRepository`, но `pool_refresh_task` не вызывает `create_backup()`.
+
+**Должно быть:**
+Перед `BEGIN IMMEDIATE` → `backup_manager.create_backup()`.
+
+---
+
+### P2-6. Signal writer не пишет в DB
+
+**Сейчас:**
+`scanner.py` вызывает `signal_writer.write_signal(signal)` без `db_path`. Сигналы только в stdout + JSONL.
+
+**Должно быть:**
+Передавать `db_path=str(active_db_path)`. Сигналы в SQLite для GUI и анализа.
+
+---
+
+## P3 — Низкие (логи, GUI, тесты)
+
+---
+
+### P3-1. httpx INFO логи засоряют вывод
+
+**Сейчас:**
+Каждый HTTP request = 1 строка INFO. За цикл ~500+ строк. GUI Activity Log тонет в httpx.
+
+**Как реализовать:**
+```python
+logging.getLogger("httpx").setLevel(logging.WARNING)
+```
+
+---
+
+### P3-2. GUI читает DB без timeout
+
+**Сейчас:**
+`gui/dashboard.py`:
+```python
+sqlite3.connect(str(db))
+```
+Во время refresh (BEGIN IMMEDIATE) GUI может получить `database is locked`.
+
+**Как реализовать:**
+```python
+sqlite3.connect(str(db), timeout=5)
+```
+
+---
+
+### P3-3. Metrics endpoint не обновляется ботом
+
+**Сейчас:**
+`metrics/health.py` `update_metrics()` вызывается только из GUI. `/metrics` показывает stale данные.
+
+**Как реализовать:**
+В `scanner.py` после цикла:
+```python
+from metrics.health import update_metrics
+update_metrics(scanner_cycles=..., signals_total=..., pools_cached=len(pool_list))
+```
+
+---
+
+### P3-4. Тесты сломаны
+
+**Сейчас:**
+`tests/unit/test_rate_limiter.py`:
+```python
+asyncio.run(self._do_acquire(limiter))  # вызов ДО определения
+async def _do_acquire(self, limiter): ...  # определение ПОСЛЕ
+```
+`FeeBreakdown(total=Decimal("0.06"))` — `total` метод, не поле.
+
+**Как реализовать:**
+1. Переместить `async def _do_acquire` перед вызовом.
+2. Убрать `total=` из `FeeBreakdown(...)`.
+
+---
+
+## Порядок выполнения
+
+```
+Этап 1 (P0, ~2-3 дня):
+  P0-1  Mask API keys в логах
+  P0-2  Decimals (token_meta_service + scanner + profit_calculator)
+  P0-3  V2 adapter: reserves из конкретного пула
+  P0-5  MEXC withdraw fees
+  P0-4  Direction B
+  P0-6  Security checks integration
+  P0-7  pool_version detection
+
+Этап 2 (P1, ~2 дня):
+  P1-1  Web3 cache (unclosed sessions)
+  P1-2  Rate limiter для web3
+  P1-5  V3 factory fee encoding
+  P1-3  Scanner performance (fee cache, token0 cache)
+
+Этап 3 (P2, ~1 день):
+  P2-1  token_coin с скобками
+  P2-2  Sanity check extreme profit
+  P2-3  Active networks filter
+  P2-4  Stale pool protection
+  P2-5  Backup before refresh
+  P2-6  Signal writer → DB
+
+Этап 4 (P3, ~0.5 дня):
+  P3-1  httpx log level
+  P3-2  GUI DB timeout
+  P3-3  Metrics update
+  P3-4  Fix tests
+```
+
+---
+
+## Критерий успеха
+
+После этапа 1, запуск должен показать:
+```
+scanner_cycle: pools=370 ... signals=0..3
+```
+С profit < 5%. Без `Unclosed client session`. Без API ключа в логах. С `"pool_version": "v2"` или `"v3"`. С `"mexc_withdraw_fee_usd": "0.5"`. С warnings от security checker.
+
+Если нужно — могу начать с конкретного пункта, например P0-2 (decimals), и расписать полный diff для junior-модели.
+
+### USER
+Сформируй общий план ревью по итогам чата как для модели qwen3 чтобы она написала код на уровне qwen3.8-max-preview
+
+### ASSISTANT

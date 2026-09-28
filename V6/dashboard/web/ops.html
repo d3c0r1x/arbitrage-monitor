@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OPS · Архив / Пулы / Логи / БД</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%2306090e'/><rect x='8' y='8' width='16' height='16' rx='2' stroke='%232dd4bf' stroke-width='2' fill='none'/></svg>">
+<link href="https://cdn.jsdelivr.net/fontsource/css/unbounded@latest/index.css" rel="stylesheet" media="print" onload="this.media='all'">
+<link href="https://cdn.jsdelivr.net/fontsource/css/manrope@latest/index.css" rel="stylesheet" media="print" onload="this.media='all'">
+<link href="https://cdn.jsdelivr.net/fontsource/css/jetbrains-mono@latest/index.css" rel="stylesheet" media="print" onload="this.media='all'">
+<style>
+:root{
+  --bg:#06090e;--p1:#0d141d;--p2:#0a1017;--line:#1b2735;--line2:#2a3c52;
+  --tx:#e6eef6;--mut:#7c90a5;--dim:#4d6178;
+  --cyan:#3fd0ff;--green:#3ddc97;--red:#ff5c6c;--amber:#ffc247;--teal:#2dd4bf;
+  --fd:'Unbounded',system-ui,sans-serif;--fb:'Manrope',system-ui,sans-serif;--fm:'JetBrains Mono',ui-monospace,monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--tx);font:14px/1.5 var(--fb);min-height:100vh}
+body::after{content:'';position:fixed;inset:0;background:radial-gradient(700px 400px at 8% -10%,rgba(45,212,191,.1),transparent 60%),radial-gradient(600px 380px at 95% 100%,rgba(63,208,255,.07),transparent 60%);pointer-events:none;z-index:0}
+.top{position:relative;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 20px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(13,20,29,.94),rgba(10,16,23,.8));flex-wrap:wrap}
+.brand h1{font:800 17px/1.1 var(--fd)}.brand h1 em{font-style:normal;color:var(--teal)}
+.brand small{display:block;font:600 9px var(--fm);letter-spacing:.22em;color:var(--mut);margin-top:4px}
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:7px;font:600 10px var(--fm);letter-spacing:.1em;color:var(--mut);border:1px solid var(--line);background:rgba(13,20,29,.6);padding:6px 10px;border-radius:4px}
+.chip b{color:var(--tx)}.chip a{color:var(--cyan);text-decoration:none;font-weight:700}
+.tabs{position:relative;z-index:2;display:flex;gap:6px;padding:12px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap;background:#080d13}
+.tab{font:700 10px var(--fm);letter-spacing:.14em;padding:8px 14px;border:1px solid var(--line);background:transparent;color:var(--mut);border-radius:4px;cursor:pointer}
+.tab:hover{color:var(--tx);border-color:var(--line2)}
+.tab.on{color:#061118;background:var(--teal);border-color:var(--teal)}
+.wrap{position:relative;z-index:2;max-width:1400px;margin:0 auto;padding:18px}
+.panel{background:linear-gradient(180deg,var(--p1),var(--p2));border:1px solid var(--line);border-radius:8px;display:none}
+.panel.on{display:block}
+.ph{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line);font:700 10px var(--fm);letter-spacing:.2em;color:var(--mut);flex-wrap:wrap}
+.pb{padding:14px}
+.hint{font:600 11px var(--fm);color:var(--dim);padding:8px 14px;border-bottom:1px solid var(--line)}
+.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}
+@media(max-width:800px){.tiles{grid-template-columns:1fr 1fr}}
+.tile{border:1px solid var(--line);border-radius:8px;padding:12px;background:rgba(13,20,29,.5)}
+.tile i{font:600 8.5px var(--fm);letter-spacing:.16em;color:var(--mut);font-style:normal;display:block}
+.tile b{display:block;font:700 20px var(--fd);margin-top:4px}
+.grid2{display:grid;grid-template-columns:280px 1fr;gap:16px}
+@media(max-width:900px){.grid2{grid-template-columns:1fr}}
+.opp{display:grid;grid-template-columns:1.5fr .7fr .7fr .8fr;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.opp:hover{background:rgba(45,212,191,.04)}
+.pair{font:700 13px var(--fd)}.pair small{display:block;font:600 10px var(--fm);color:var(--mut);margin-top:3px}
+.cell i{display:block;font:600 9px var(--fm);color:var(--mut);font-style:normal}.cell b{font:700 12px var(--fm)}
+.up{color:var(--green)}.dn{color:var(--red)}.mut{color:var(--mut)}.empty{padding:40px;text-align:center;color:var(--mut);font:600 11px var(--fm);letter-spacing:.14em}
+.drow{display:flex;justify-content:space-between;font:600 11px var(--fm);color:var(--mut);padding:4px 0}.drow b{color:var(--tx)}
+.tw{overflow:auto;max-height:62vh}
+table{width:100%;border-collapse:collapse;font:500 11px var(--fm)}
+th{position:sticky;top:0;background:#0c141e;color:var(--dim);font:700 9px var(--fm);letter-spacing:.12em;text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+td{padding:6px 10px;border-bottom:1px solid rgba(27,39,53,.55);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+td a{color:var(--cyan);text-decoration:none}
+.inp,select.sel{background:#0a111a;border:1px solid var(--line);color:var(--tx);font:600 12px var(--fm);padding:7px 9px;border-radius:4px;outline:none}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line)}
+.btn{font:700 10px var(--fm);letter-spacing:.1em;padding:7px 11px;border-radius:4px;border:1px solid rgba(63,208,255,.4);background:transparent;color:var(--cyan);cursor:pointer}
+.btn:hover{background:rgba(63,208,255,.1)}
+.btn.on{border-color:var(--teal);color:var(--teal)}
+#logBox{height:62vh;overflow:auto;padding:10px 14px;font:500 11.5px/1.7 var(--fm);background:#070b10}
+.ll{display:flex;gap:10px;padding:1px 0;align-items:baseline}
+.ll .lv{flex:none;width:54px;text-align:center;font:700 9px var(--fm);border-radius:3px;padding:1px 0}
+.lv-INFO{color:#9db4c9;background:rgba(157,180,201,.09)}
+.lv-WARN{color:var(--amber);background:rgba(255,194,71,.12)}
+.lv-ERROR{color:var(--red);background:rgba(255,92,108,.14)}
+.lv-SCAN{color:var(--cyan);background:rgba(63,208,255,.1)}
+.ll .m{color:#c3d2e0;word-break:break-word;white-space:pre-wrap}
+footer{position:relative;z-index:2;padding:18px;text-align:center;color:var(--dim);font:600 10px var(--fm);border-top:1px solid var(--line);margin-top:20px}
+footer a{color:var(--cyan);text-decoration:none}
+.pos{color:var(--green)}.neg{color:var(--red)}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <h1>OPS <em>·</em> АРХИВ</h1>
+    <small>СДОХШИЕ · ПУЛЫ · ЖУРНАЛ · БАЗА</small>
+  </div>
+  <div class="chips">
+    <span class="chip">АРХИВ <b id="hArch">0</b></span>
+    <span class="chip">ПУЛЫ <b id="hPools">0</b></span>
+    <span class="chip">ЛОГ <b id="hLog">—</b></span>
+    <span class="chip"><a href="/">← MONITOR</a></span>
+    <span class="chip"><a href="/alt-cex">ALT CEX ↗</a></span>
+  </div>
+</header>
+
+<nav class="tabs">
+  <button class="tab on" data-tab="archive">АРХИВ</button>
+  <button class="tab" data-tab="signals">СИГНАЛЫ MEXC</button>
+  <button class="tab" data-tab="pools">ПУЛЫ</button>
+  <button class="tab" data-tab="logs">ЖУРНАЛ БОТА</button>
+  <button class="tab" data-tab="db">БАЗА ДАННЫХ</button>
+</nav>
+
+<main class="wrap">
+  <!-- ARCHIVE -->
+  <section class="panel on" id="tab-archive">
+    <div class="ph"><span>АРХИВ · СДОХШИЕ</span><span id="archCount">0</span></div>
+    <div class="hint">история expired / unprofitable из signals_archive.jsonl</div>
+    <div class="pb">
+      <div class="tiles">
+        <div class="tile"><i>ВСЕГО</i><b id="aTotal">0</b></div>
+        <div class="tile"><i>ПРИЧИНЫ</i><b id="aReasons">0</b></div>
+        <div class="tile"><i>СЕТИ</i><b id="aNets">0</b></div>
+        <div class="tile"><i>ПОКАЗАНО</i><b id="aShown">0</b></div>
+      </div>
+      <div class="grid2">
+        <div>
+          <div class="dsub" style="font:700 9px var(--fm);color:var(--dim);letter-spacing:.16em;margin-bottom:6px">REASON</div>
+          <div id="aReasonDist"></div>
+          <div class="dsub" style="font:700 9px var(--fm);color:var(--dim);letter-spacing:.16em;margin:14px 0 6px">NETWORK</div>
+          <div id="aNetDist"></div>
+        </div>
+        <div id="archList"><div class="empty">ПУСТО</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SIGNALS -->
+  <section class="panel" id="tab-signals">
+    <div class="ph"><span>ИСТОРИЯ MEXC⇄DEX</span><span id="sigCount">0</span></div>
+    <div class="toolbar">
+      <label style="font:600 10px var(--fm);color:var(--mut)">сессия <input type="checkbox" id="tglSession" checked></label>
+      <input class="inp" id="sigSearch" placeholder="токен / сеть / dex…" style="min-width:200px">
+    </div>
+    <div id="sigList"><div class="empty">НЕТ СИГНАЛОВ</div></div>
+  </section>
+
+  <!-- POOLS -->
+  <section class="panel" id="tab-pools">
+    <div class="ph"><span>ПУЛЫ В КЭШЕ</span><span id="poolCount">0</span></div>
+    <div class="toolbar">
+      <input class="inp" id="poolSearch" placeholder="фильтр…" style="min-width:220px">
+    </div>
+    <div class="tw"><table><thead><tr><th>СЕТЬ</th><th>DEX</th><th>ТОКЕН</th><th>КВОТА</th><th>ПУЛ</th><th>ВЕР</th><th>ДЕП</th><th>ВЫВ</th></tr></thead><tbody id="poolBody"></tbody></table></div>
+  </section>
+
+  <!-- LOGS -->
+  <section class="panel" id="tab-logs">
+    <div class="ph"><span>ЖУРНАЛ БОТА · ВСЕ ЛОГИ</span><span id="logMeta">—</span></div>
+    <div class="toolbar">
+      <select class="sel" id="logFile"></select>
+      <select class="sel" id="logTail">
+        <option value="500">хвост 500</option>
+        <option value="2000">хвост 2k</option>
+        <option value="10000" selected>хвост 10k</option>
+        <option value="50000">хвост 50k</option>
+        <option value="100000">до 100k (почти всё)</option>
+      </select>
+      <input class="inp" id="logSearch" placeholder="поиск…" style="min-width:160px">
+      <button class="btn" id="btnLogReload">ОБНОВИТЬ</button>
+      <button class="btn on" id="btnLogAuto">АВТО</button>
+      <button class="btn" id="btnLogCopy">КОПИРОВАТЬ</button>
+    </div>
+    <div id="logBox"></div>
+  </section>
+
+  <!-- DB -->
+  <section class="panel" id="tab-db">
+    <div class="ph"><span>БАЗА ДАННЫХ</span><select class="sel" id="dbSelect"></select></div>
+    <div class="hint" id="dbInfo">подключение…</div>
+    <div class="tw"><table><thead id="dbHead"></thead><tbody id="dbBody"></tbody></table></div>
+  </section>
+</main>
+
+<footer>
+  <a href="/">основной монитор</a> · archive / pools / full logs / sqlite
+</footer>
+
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pct=v=>{const x=parseFloat(v);return Number.isFinite(x)?x.toFixed(2)+'%':'—'};
+const usd=v=>{const x=parseFloat(v);if(!Number.isFinite(x))return '—';return Math.abs(x)>=1?'$'+x.toFixed(2):'$'+x.toFixed(4)};
+const sizeRange=o=>{
+  const mn=parseFloat(o.size_min_usd), mx=parseFloat(o.size_max_usd);
+  const b=parseFloat(o.size_optimal_usd??o.base_amount_usd);
+  if(Number.isFinite(mn)&&Number.isFinite(mx)&&mn>0&&mx>0){
+    if(Math.abs(mx-mn)<0.005) return usd(mn);
+    return usd(mn)+'–'+usd(mx);
+  }
+  return usd(b);
+};
+const fmtN=n=>{const x=Number(n);return Number.isFinite(x)?x.toLocaleString('ru-RU'):'—'};
+const EXPLORERS={ETHEREUM:'https://etherscan.io',BSC:'https://bscscan.com',ARBITRUM:'https://arbiscan.io',BASE:'https://basescan.org'};
+function explorerLink(net,addr){
+  const b=EXPLORERS[(net||'').toUpperCase()];
+  if(!b||!addr)return esc((addr||'').slice(0,14));
+  return `<a href="${b}/address/${encodeURIComponent(addr)}" target="_blank" rel="noopener">${esc(addr.slice(0,6)+'…'+addr.slice(-4))}</a>`;
+}
+
+const S={tab:'archive',session:true,sigQ:'',poolQ:'',logQ:'',logAuto:true,logLines:[],sigCache:[],POOLS:[]};
+
+document.querySelectorAll('.tab').forEach(btn=>{
+  btn.onclick=()=>{
+    S.tab=btn.dataset.tab;
+    document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('on',t===btn));
+    document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('on',p.id==='tab-'+S.tab));
+    if(S.tab==='logs')loadLogs();
+    if(S.tab==='db')loadDbTables();
+    if(S.tab==='pools')loadPools();
+    if(S.tab==='signals')loadSignals();
+  };
+});
+
+function dist(el,obj){
+  const e=Object.entries(obj||{});
+  el.innerHTML=e.length?e.map(([k,v])=>`<div class="drow"><span>${esc(k)}</span><b>${v}</b></div>`).join(''):'<div class="mut">—</div>';
+}
+
+async function loadArchive(){
+  try{
+    const r=await fetch('/api/archive?limit=500');if(!r.ok)return;
+    const d=await r.json();
+    const items=d.items||[];
+    $('hArch').textContent=d.count||0;
+    $('archCount').textContent=(d.count||0)+' ЗАП.';
+    $('aTotal').textContent=d.count||0;
+    $('aReasons').textContent=Object.keys(d.reason_dist||{}).length;
+    $('aNets').textContent=Object.keys(d.network_dist||{}).length;
+    $('aShown').textContent=items.length;
+    dist($('aReasonDist'),d.reason_dist);
+    dist($('aNetDist'),d.network_dist);
+    if(!items.length){$('archList').innerHTML='<div class="empty">ПУСТО</div>';return}
+    $('archList').innerHTML=items.map(o=>{
+      const ts=o.archived_ts?new Date(o.archived_ts*1000).toISOString().slice(11,19):'';
+      const np=parseFloat(o.net_profit_pct);
+      return `<div class="opp">
+        <div><div class="pair">${esc(o.token_coin||'?')}<small>${esc(ts)} · ${esc(o.reason||'')}</small></div>
+        <div style="font:600 11px var(--fm);color:var(--teal);margin-top:4px">${esc(o.network||'')} · ${esc(o.direction||'')}</div></div>
+        <div class="cell"><i>NET %</i><b class="${Number.isFinite(np)&&np>=0?'up':'dn'}">${pct(o.net_profit_pct)}</b></div>
+        <div class="cell"><i>SIZE</i><b>${sizeRange(o)}</b></div>
+        <div class="cell"><i>DEX</i><b>${esc(o.dex||'—')}</b></div>
+      </div>`;
+    }).join('');
+  }catch(_){}
+}
+
+function dedupeSignals(sigs){
+  const best=new Map();
+  for(const s of sigs){
+    const k=[(s.network||'').toUpperCase(),(s.token_coin||'').toUpperCase(),s.direction||''].join('|');
+    const prev=best.get(k);
+    if(!prev||(parseFloat(s.net_profit_usd)||0)>(parseFloat(prev.net_profit_usd)||0))best.set(k,s);
+  }
+  return [...best.values()];
+}
+
+function renderSignals(){
+  const rows=S.sigCache.filter(s=>{
+    if(!S.sigQ)return true;
+    return JSON.stringify([s.token_coin,s.network,s.dex,s.direction]).toLowerCase().includes(S.sigQ);
+  });
+  $('sigCount').textContent=rows.length+' / '+S.sigCache.length;
+  if(!rows.length){$('sigList').innerHTML='<div class="empty">НЕТ СИГНАЛОВ</div>';return}
+  $('sigList').innerHTML=rows.slice(0,300).map(s=>{
+    const np=parseFloat(s.net_profit_pct);
+    return `<div class="opp">
+      <div><div class="pair">${esc(s.token_coin||'?')}<small>${esc((s.timestamp||'').slice(11,19))} · ${esc(s.network)}</small></div>
+      <div style="font:600 11px var(--fm);color:var(--cyan);margin-top:4px">${esc(s.direction)} · ${esc(s.dex||'')}</div></div>
+      <div class="cell"><i>NET %</i><b class="up">${pct(s.net_profit_pct)}</b></div>
+      <div class="cell"><i>NET $</i><b>${usd(s.net_profit_usd)}</b></div>
+      <div class="cell"><i>SIZE</i><b>${sizeRange(s)}</b></div>
+    </div>`;
+  }).join('');
+}
+
+async function loadSignals(){
+  try{
+    const r=await fetch('/api/signals?limit=800&session_only='+S.session);if(!r.ok)return;
+    const d=await r.json();
+    S.sigCache=dedupeSignals(d.signals||[]);
+    renderSignals();
+  }catch(_){}
+}
+
+function renderPools(){
+  const f=S.poolQ;
+  const rows=S.POOLS.filter(p=>!f||JSON.stringify([p.network,p.dex,p.token_coin,p.quote_coin]).toLowerCase().includes(f));
+  $('poolCount').textContent=fmtN(rows.length);
+  $('hPools').textContent=S.POOLS.length;
+  $('poolBody').innerHTML=rows.slice(0,1500).map(p=>`<tr>
+    <td>${esc(p.network)}</td><td>${esc(p.dex)}</td><td><b>${esc(p.token_coin||'?')}</b></td>
+    <td>${esc(p.quote_coin||p.stablecoin_coin||'')}</td>
+    <td class="mut">${explorerLink(p.network,p.pool_address)}</td>
+    <td>${esc(p.pool_version||'')}</td>
+    <td class="${p.token_deposit_enable?'pos':'neg'}">${p.token_deposit_enable?'✓':'✗'}</td>
+    <td class="${p.token_withdraw_enable?'pos':'neg'}">${p.token_withdraw_enable?'✓':'✗'}</td>
+  </tr>`).join('')||'<tr><td colspan="8" class="mut">нет пулов</td></tr>';
+}
+
+async function loadPools(){
+  try{
+    const r=await fetch('/api/pools?limit=5000');if(!r.ok)return;
+    const d=await r.json();
+    S.POOLS=d.pools||[];
+    renderPools();
+  }catch(_){}
+}
+
+function classify(line){
+  const u=line.toUpperCase();
+  if(u.includes('ERROR')||u.includes('[ERROR]'))return 'ERROR';
+  if(u.includes('WARNING')||u.includes('[WARN'))return 'WARN';
+  if(u.includes('DISCOVERY')||u.includes('POOL_REFRESH')||u.includes('SCANNER'))return 'SCAN';
+  return 'INFO';
+}
+
+function renderLogs(){
+  const q=S.logQ;
+  const lines=S.logLines.filter(l=>!q||l.toLowerCase().includes(q));
+  $('logBox').innerHTML=lines.map(l=>{
+    const lv=classify(l);
+    return `<div class="ll"><span class="lv lv-${lv}">${lv}</span><span class="m">${esc(l)}</span></div>`;
+  }).join('')||'<div class="empty">пусто</div>';
+  if(S.logAuto)$('logBox').scrollTop=$('logBox').scrollHeight;
+}
+
+async function loadLogs(){
+  try{
+    const file=$('logFile').value;
+    const tail=$('logTail').value;
+    const q=new URLSearchParams({tail});
+    if(file)q.set('file',file);
+    const r=await fetch('/api/logs?'+q);if(!r.ok)return;
+    const d=await r.json();
+    const avail=d.available||[];
+    const names=avail.map(a=>typeof a==='string'?a:a.name);
+    const cur=$('logFile').value;
+    $('logFile').innerHTML=names.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('');
+    if(cur&&names.includes(cur))$('logFile').value=cur;
+    else if(d.file)$('logFile').value=d.file;
+    S.logLines=d.lines||[];
+    $('hLog').textContent=d.file||'—';
+    $('logMeta').textContent=`${d.file||'—'} · строк ${fmtN(d.returned)} / ${fmtN(d.total_lines)}`;
+    renderLogs();
+  }catch(_){}
+}
+
+async function loadDbTables(){
+  try{
+    const r=await fetch('/api/db/tables');
+    const d=await r.json();
+    if(d.error){$('dbInfo').textContent='⚠ '+d.error;return}
+    const sel=$('dbSelect'),cur=sel.value;
+    sel.innerHTML=(d.tables||[]).map(t=>`<option value="${esc(t.name)}">${esc(t.name)} (${t.rows})</option>`).join('');
+    if(cur&&[...sel.options].some(o=>o.value===cur))sel.value=cur;
+    if(sel.value)loadDbRows(sel.value);
+  }catch(_){}
+}
+
+async function loadDbRows(name){
+  try{
+    const r=await fetch('/api/db/table/'+encodeURIComponent(name)+'?limit=200');
+    const d=await r.json();
+    if(d.error){$('dbInfo').textContent='⚠ '+d.error;return}
+    $('dbInfo').textContent=`${d.columns.length} колонок · ${d.rows.length} строк`;
+    $('dbHead').innerHTML='<tr>'+d.columns.map(c=>`<th>${esc(c)}</th>`).join('')+'</tr>';
+    $('dbBody').innerHTML=d.rows.map(row=>'<tr>'+d.columns.map(c=>`<td title="${esc(row[c])}">${esc(row[c])}</td>`).join('')+'</tr>').join('');
+  }catch(_){}
+}
+
+$('tglSession').onchange=e=>{S.session=e.target.checked;loadSignals()};
+$('sigSearch').oninput=e=>{S.sigQ=e.target.value.trim().toLowerCase();renderSignals()};
+$('poolSearch').oninput=e=>{S.poolQ=e.target.value.trim().toLowerCase();renderPools()};
+$('logSearch').oninput=e=>{S.logQ=e.target.value.trim().toLowerCase();renderLogs()};
+$('logFile').onchange=()=>loadLogs();
+$('logTail').onchange=()=>loadLogs();
+$('btnLogReload').onclick=()=>loadLogs();
+$('btnLogAuto').onclick=()=>{S.logAuto=!S.logAuto;$('btnLogAuto').classList.toggle('on',S.logAuto)};
+$('btnLogCopy').onclick=()=>navigator.clipboard.writeText(S.logLines.join('\n'));
+$('dbSelect').onchange=e=>loadDbRows(e.target.value);
+
+loadArchive();loadSignals();loadPools();loadLogs();
+setInterval(()=>{if(S.tab==='archive')loadArchive()},10000);
+setInterval(()=>{if(S.tab==='logs'&&S.logAuto)loadLogs()},4000);
+setInterval(()=>{if(S.tab==='signals')loadSignals()},8000);
+</script>
+</body>
+</html>

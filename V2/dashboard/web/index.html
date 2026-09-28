@@ -1,0 +1,994 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MEXC ⇄ DEX · Арбитражный бот — Центр мониторинга</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%2306090e'/><path d='M7 21l5-9 3.5 5.5 3-4.5 6.5 8' stroke='%233ddc97' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+<link rel="preconnect" href="https://cdn.jsdelivr.net">
+<link href="https://cdn.jsdelivr.net/fontsource/css/unbounded@latest/index.css" rel="stylesheet" media="print" onload="this.media='all'">
+<link href="https://cdn.jsdelivr.net/fontsource/css/manrope@latest/index.css" rel="stylesheet" media="print" onload="this.media='all'">
+<link href="https://cdn.jsdelivr.net/fontsource/css/jetbrains-mono@latest/index.css" rel="stylesheet" media="print" onload="this.media='all'">
+<style>
+:root{
+  --bg:#06090e;--p1:#0d141d;--p2:#0a1017;--line:#1b2735;--line2:#2a3c52;
+  --tx:#e6eef6;--mut:#7c90a5;--dim:#4d6178;
+  --cyan:#3fd0ff;--green:#3ddc97;--red:#ff5c6c;--amber:#ffc247;--blue:#5aa2ff;--teal:#2dd4bf;--pink:#ff8fab;
+  --fd:'Unbounded',system-ui,sans-serif;--fb:'Manrope',system-ui,sans-serif;--fm:'JetBrains Mono',ui-monospace,monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scrollbar-color:#22344a #0a1017}
+body{background:var(--bg);color:var(--tx);font:14px/1.5 var(--fb);min-height:100vh;overflow-x:hidden}
+body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(rgba(63,208,255,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(63,208,255,.045) 1px,transparent 1px);background-size:44px 44px;pointer-events:none;z-index:0;-webkit-mask-image:radial-gradient(ellipse 95% 75% at 50% 0%,#000 25%,transparent 100%);mask-image:radial-gradient(ellipse 95% 75% at 50% 0%,#000 25%,transparent 100%)}
+body::after{content:'';position:fixed;inset:0;background:radial-gradient(720px 440px at 10% -8%,rgba(63,208,255,.13),transparent 62%),radial-gradient(660px 420px at 94% 112%,rgba(61,220,151,.09),transparent 62%);pointer-events:none;z-index:0}
+.scan{position:fixed;inset:0;pointer-events:none;z-index:60;background:repeating-linear-gradient(0deg,rgba(255,255,255,.015) 0 1px,transparent 1px 3px)}
+::selection{background:rgba(63,208,255,.3)}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:#1e2d3f;border-radius:5px;border:2px solid #0a1017}
+::-webkit-scrollbar-thumb:hover{background:#2b3f57}
+
+/* ── Шапка ── */
+.top{position:relative;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 20px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(13,20,29,.92),rgba(10,16,23,.78));flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:12px}
+.brand svg{width:40px;height:40px;flex:none;filter:drop-shadow(0 0 10px rgba(63,208,255,.35))}
+.brand h1{font:800 17px/1.1 var(--fd);letter-spacing:.02em}
+.brand h1 em{font-style:normal;color:var(--cyan)}
+.brand small{display:block;font:600 9px var(--fm);letter-spacing:.26em;color:var(--mut);margin-top:4px}
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:7px;font:600 10px var(--fm);letter-spacing:.1em;color:var(--mut);border:1px solid var(--line);background:rgba(13,20,29,.6);padding:6px 10px;border-radius:4px}
+.chip b{color:var(--tx);font-weight:700;font-variant-numeric:tabular-nums}
+.chip b.ok{color:var(--green)}
+.chip b.bad{color:var(--red)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--dim);flex:none}
+.dot.live{background:var(--green);animation:pulse 1.6s infinite}
+.dot.off{background:var(--red)}
+.dot.cy{background:var(--cyan);animation:pulse 1.6s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(61,220,151,.55)}70%{box-shadow:0 0 0 7px rgba(61,220,151,0)}100%{box-shadow:0 0 0 0 rgba(61,220,151,0)}}
+
+/* ── Бегущая строка ── */
+.tape{position:relative;z-index:2;overflow:hidden;border-bottom:1px solid var(--line);background:#080d13;height:36px;display:flex;align-items:center}
+.tape-track{display:flex;width:max-content;animation:tape 48s linear infinite}
+.tape:hover .tape-track{animation-play-state:paused}
+@keyframes tape{to{transform:translateX(-50%)}}
+.ti{display:inline-flex;align-items:center;gap:8px;padding:0 22px;font:600 11px var(--fm);white-space:nowrap;border-right:1px solid var(--line);height:36px}
+.ti .s{color:var(--mut);letter-spacing:.08em}
+.ti .p{color:var(--tx);font-variant-numeric:tabular-nums}
+.ti .c{font-size:10px}
+.up{color:var(--green)}.dn{color:var(--red)}
+
+/* ── Сетка ── */
+.wrap{position:relative;z-index:2;max-width:1560px;margin:0 auto;padding:18px;display:grid;grid-template-columns:338px 1fr;gap:16px;align-items:start}
+.rail,.col{display:flex;flex-direction:column;gap:16px;min-width:0}
+
+/* ── Панели ── */
+.panel{position:relative;background:linear-gradient(180deg,var(--p1),var(--p2));border:1px solid var(--line);border-radius:8px}
+.panel::before,.panel::after{content:'';position:absolute;width:14px;height:14px;pointer-events:none;z-index:1}
+.panel::before{top:-1px;left:-1px;border-top:2px solid rgba(63,208,255,.55);border-left:2px solid rgba(63,208,255,.55);border-radius:8px 0 0 0}
+.panel::after{bottom:-1px;right:-1px;border-bottom:2px solid rgba(61,220,151,.45);border-right:2px solid rgba(61,220,151,.45);border-radius:0 0 8px 0}
+.ph{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.ph .t{font:700 10px var(--fm);letter-spacing:.24em;color:var(--mut);display:flex;align-items:center;gap:8px}
+.ph .t i{width:6px;height:6px;background:var(--cyan);border-radius:1px;box-shadow:0 0 8px rgba(63,208,255,.8);flex:none}
+.pb{padding:14px}
+
+/* ── Сводка ── */
+.bal-l{font:600 9.5px var(--fm);letter-spacing:.22em;color:var(--mut)}
+.bal-v{font:800 33px/1.15 var(--fd);letter-spacing:.01em;margin:7px 0 3px;font-variant-numeric:tabular-nums}
+.bal-v small{font:700 14px var(--fd);color:var(--mut)}
+.pnl{font:700 12px var(--fm)}
+#spark{width:100%;height:64px;margin-top:12px;display:block}
+.split{margin-top:12px}
+.split-bar{display:flex;height:8px;border-radius:3px;overflow:hidden;border:1px solid var(--line)}
+.split-bar i{transition:width .6s ease;display:block}
+.split-leg{display:flex;justify-content:space-between;margin-top:7px;font:600 9.5px var(--fm);color:var(--mut);gap:8px}
+.split-leg b{color:var(--tx);font-variant-numeric:tabular-nums}
+
+/* ── Плитки ── */
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.tile{background:linear-gradient(180deg,var(--p1),var(--p2));border:1px solid var(--line);border-radius:8px;padding:12px 14px;transition:border-color .25s,transform .25s}
+.tile:hover{border-color:var(--line2);transform:translateY(-2px)}
+.tile i{font:600 8.5px var(--fm);letter-spacing:.18em;color:var(--mut);font-style:normal;display:block}
+.tile b{display:block;font:700 22px/1.25 var(--fd);margin-top:5px;font-variant-numeric:tabular-nums}
+.tile u{text-decoration:none;font:600 9px var(--fm);color:var(--dim)}
+.wbar{height:4px;background:var(--line);border-radius:2px;margin-top:8px;overflow:hidden}
+.wbar span{display:block;height:100%;background:linear-gradient(90deg,var(--cyan),var(--green));width:0;transition:width .6s}
+
+/* ── Фильтры ── */
+.set{display:flex;flex-direction:column;gap:13px}
+.srow label{display:flex;justify-content:space-between;font:600 9.5px var(--fm);letter-spacing:.14em;color:var(--mut);margin-bottom:6px}
+.srow label output{color:var(--cyan);font-weight:700}
+input[type=range]{width:100%;accent-color:var(--cyan);cursor:pointer}
+input[type=text].inp{background:#0a111a;border:1px solid var(--line);color:var(--tx);font:600 12px var(--fm);padding:7px 9px;border-radius:4px;width:100%;outline:none;transition:border-color .2s}
+input[type=text].inp:focus{border-color:var(--cyan)}
+.tgl-row{display:flex;align-items:center;justify-content:space-between;font:600 10px var(--fm);letter-spacing:.12em;color:var(--mut)}
+.tgl{position:relative;width:38px;height:20px;flex:none;cursor:pointer}
+.tgl input{opacity:0;position:absolute;inset:0;cursor:pointer;z-index:1}
+.tgl span{position:absolute;inset:0;background:#16202d;border:1px solid var(--line2);border-radius:20px;transition:.25s}
+.tgl span::before{content:'';position:absolute;width:12px;height:12px;left:3px;top:3px;background:var(--dim);border-radius:50%;transition:.25s}
+.tgl input:checked+span{background:rgba(61,220,151,.18);border-color:var(--green)}
+.tgl input:checked+span::before{transform:translateX(17px);background:var(--green);box-shadow:0 0 8px rgba(61,220,151,.7)}
+.set-note{font:500 9px var(--fm);color:var(--dim);letter-spacing:.08em}
+
+/* ── Распределения / БД ── */
+.drow{display:grid;grid-template-columns:96px 1fr 44px;gap:9px;align-items:center;padding:5px 0;font:600 10.5px var(--fm)}
+.drow .k{color:var(--mut);letter-spacing:.06em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.drow .v{color:var(--tx);text-align:right;font-variant-numeric:tabular-nums}
+.dbar{height:5px;background:var(--line);border-radius:3px;overflow:hidden}
+.dbar span{display:block;height:100%;background:linear-gradient(90deg,var(--cyan),var(--green));transition:width .6s}
+.dbar.warn span{background:linear-gradient(90deg,var(--amber),var(--red))}
+.dsub{font:700 9px var(--fm);letter-spacing:.2em;color:var(--dim);margin:10px 0 4px}
+.dsub:first-child{margin-top:0}
+select.sel{background:#0a111a;border:1px solid var(--line);color:var(--tx);font:600 10.5px var(--fm);padding:5px 8px;border-radius:4px;outline:none;max-width:180px}
+select.sel:focus{border-color:var(--cyan)}
+
+/* ── Таблицы ── */
+.tw{overflow:auto;max-height:340px}
+table{width:100%;border-collapse:collapse;font:500 11px var(--fm)}
+th{position:sticky;top:0;z-index:1;background:#0c141e;color:var(--dim);font:700 9px var(--fm);letter-spacing:.14em;text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:6px 10px;border-bottom:1px solid rgba(27,39,53,.55);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px;font-variant-numeric:tabular-nums}
+tbody tr{transition:background .15s}
+tbody tr:hover{background:rgba(63,208,255,.035)}
+td a{color:var(--cyan);text-decoration:none;opacity:.8}
+td a:hover{opacity:1;text-decoration:underline}
+.pos{color:var(--green)}.neg{color:var(--red)}.wrn{color:var(--amber)}.mut{color:var(--mut)}
+
+/* ── Сигналы ── */
+.opp-head-extra{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.count-badge{font:700 10px var(--fm);color:var(--green);background:rgba(61,220,151,.1);border:1px solid rgba(61,220,151,.35);padding:3px 8px;border-radius:3px;letter-spacing:.08em}
+.hint{font:500 9px var(--fm);color:var(--dim);letter-spacing:.06em;padding:8px 16px;border-bottom:1px solid var(--line)}
+#sigList{max-height:620px;overflow-y:auto}
+.opp{display:grid;grid-template-columns:1.5fr 1fr .62fr .72fr .62fr 1fr;gap:14px;align-items:center;padding:13px 16px;border-bottom:1px solid var(--line);animation:slideIn .4s ease both;transition:background .2s}
+.opp-wrap{border-bottom:1px solid var(--line)}
+.opp-wrap .opp{border-bottom:0}
+.size-row{grid-column:1/-1;padding:0 16px 12px;display:grid;grid-template-columns:110px 1fr 160px;gap:12px;align-items:center}
+.size-row label{font:600 9px var(--fm);letter-spacing:.14em;color:var(--mut)}
+.size-row input[type=range]{width:100%;accent-color:var(--cyan)}
+.size-meta{font:600 10px var(--fm);color:var(--mut);text-align:right}
+.size-meta b{color:var(--tx);font-variant-numeric:tabular-nums}
+.size-meta .ok{color:var(--green)}.size-meta .bad{color:var(--red)}
+.size-empty{font:500 9px var(--fm);color:var(--dim);grid-column:1/-1;padding:0 16px 10px}
+.opp:hover{background:rgba(63,208,255,.035)}
+.opp:last-child{border-bottom:none}
+@keyframes slideIn{from{opacity:0;transform:translateX(-12px)}to{opacity:1;transform:none}}
+.pair-name{font:700 13px var(--fd);letter-spacing:.02em}
+.pair-name small{font:600 9px var(--fm);color:var(--dim);margin-left:6px}
+.route{display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap}
+.vb{font:700 9px var(--fm);letter-spacing:.06em;padding:3px 7px;border-radius:3px;border:1px solid}
+.arr{color:var(--dim);font-size:10px}
+.opp-links{margin-top:6px;display:flex;gap:12px}
+.opp-links a{font:600 9.5px var(--fm);color:var(--cyan);text-decoration:none;opacity:.7;transition:.2s}
+.opp-links a:hover{opacity:1;text-decoration:underline}
+.opp i{display:block;font:600 8.5px var(--fm);letter-spacing:.16em;color:var(--dim);font-style:normal;margin-bottom:3px}
+.opp b{font:700 12.5px var(--fm);font-variant-numeric:tabular-nums}
+.opp-spread b{font:800 17px var(--fm);color:var(--green)}
+.opp.low .opp-spread b{color:var(--dim)}
+.opp-profit b{color:var(--green)}
+.r-low{color:var(--teal)}.r-med{color:var(--amber)}.r-high{color:var(--red)}
+.opp-warn{font:500 9px var(--fm);color:var(--amber);white-space:normal;word-break:break-word}
+.empty{padding:46px 20px;text-align:center;color:var(--mut);font:600 10.5px var(--fm);letter-spacing:.16em}
+.radar{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--cyan);margin-right:9px;animation:pulse 1.4s infinite;vertical-align:1px}
+
+/* ── Логи ── */
+.log-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--line)}
+.fchip{font:700 9px var(--fm);letter-spacing:.1em;padding:4px 9px;border-radius:3px;border:1px solid var(--line);background:transparent;color:var(--mut);cursor:pointer;transition:.2s}
+.fchip:hover{border-color:var(--line2);color:var(--tx)}
+.fchip.on{color:#061118;background:var(--cyan);border-color:var(--cyan)}
+.fchip[data-l="SIGNAL"].on{background:var(--green);border-color:var(--green)}
+.fchip[data-l="WARN"].on{background:var(--amber);border-color:var(--amber)}
+.fchip[data-l="ERROR"].on{background:var(--red);border-color:var(--red)}
+#logSearch{background:#0a111a;border:1px solid var(--line);border-radius:4px;color:var(--tx);font:600 10.5px var(--fm);padding:5px 9px;width:150px;outline:none;transition:border-color .2s}
+#logSearch:focus{border-color:var(--cyan)}
+.log-bar .sp{flex:1}
+.paused-badge{font:700 9px var(--fm);color:var(--amber);border:1px solid rgba(255,194,71,.45);padding:3px 7px;border-radius:3px;letter-spacing:.16em;display:none}
+.key-hint{font:500 8.5px var(--fm);color:var(--dim);letter-spacing:.1em}
+#logBox{height:372px;overflow-y:auto;padding:10px 12px;font:500 11.5px/1.85 var(--fm)}
+.ll{display:flex;gap:10px;align-items:baseline;padding:1px 0}
+.ll .lv{flex:none;width:54px;text-align:center;font:700 9px/1.8 var(--fm);letter-spacing:.08em;border-radius:3px}
+.lv-INFO{color:#9db4c9;background:rgba(157,180,201,.09)}
+.lv-SCAN{color:var(--cyan);background:rgba(63,208,255,.1)}
+.lv-SIGNAL{color:var(--green);background:rgba(61,220,151,.13)}
+.lv-WARN{color:var(--amber);background:rgba(255,194,71,.12)}
+.lv-ERROR{color:var(--red);background:rgba(255,92,108,.14)}
+.ll .m{color:#c3d2e0;word-break:break-word;white-space:pre-wrap}
+
+/* ── Кнопки ── */
+.btn{font:700 10px var(--fm);letter-spacing:.12em;padding:8px 13px;border-radius:4px;border:1px solid transparent;cursor:pointer;transition:transform .18s,box-shadow .18s,background .18s,color .18s;white-space:nowrap}
+.btn:active{transform:translateY(1px) scale(.98)}
+.btn-ghost{background:transparent;color:var(--cyan);border-color:rgba(63,208,255,.4)}
+.btn-ghost:hover{background:rgba(63,208,255,.1)}
+.btn-ghost.on{color:var(--amber);border-color:rgba(255,194,71,.55);background:rgba(255,194,71,.07)}
+.btn-sm{padding:5px 9px;font-size:9px}
+
+/* ── Тосты ── */
+#toasts{position:fixed;top:72px;right:16px;z-index:100;display:flex;flex-direction:column;gap:10px;width:292px;max-width:calc(100vw - 32px)}
+.toast{background:linear-gradient(180deg,#101a26,#0c141d);border:1px solid var(--line2);border-left:3px solid var(--cyan);border-radius:6px;padding:11px 13px;box-shadow:0 12px 34px rgba(0,0,0,.55);animation:toastIn .32s cubic-bezier(.2,.9,.3,1.15) both}
+.toast.ok{border-left-color:var(--green)}
+.toast.err{border-left-color:var(--red)}
+.toast.warn{border-left-color:var(--amber)}
+.toast h4{font:700 11px var(--fm);letter-spacing:.12em;margin-bottom:3px}
+.toast.ok h4{color:var(--green)}.toast.err h4{color:var(--red)}.toast.warn h4{color:var(--amber)}
+.toast p{font:500 10.5px var(--fm);color:var(--mut)}
+.toast.out{animation:toastOut .3s ease both}
+@keyframes toastIn{from{opacity:0;transform:translateX(34px)}to{opacity:1;transform:none}}
+@keyframes toastOut{to{opacity:0;transform:translateX(34px)}}
+
+/* ── Подвал ── */
+footer{position:relative;z-index:2;border-top:1px solid var(--line);margin-top:6px;padding:18px 22px;display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:center}
+.flinks{display:flex;gap:16px;flex-wrap:wrap}
+.flinks a{font:600 10px var(--fm);letter-spacing:.1em;color:var(--mut);text-decoration:none;transition:.2s}
+.flinks a:hover{color:var(--cyan);text-decoration:underline}
+.fnote{font:500 9.5px/1.6 var(--fm);color:var(--dim);max-width:560px}
+
+@media(max-width:1180px){
+  .wrap{grid-template-columns:1fr}
+  .rail{display:grid;grid-template-columns:1fr 1fr;align-items:start}
+  .rail>.panel:first-child,.tiles{grid-column:1/-1}
+}
+@media(max-width:960px){
+  .opp{grid-template-columns:1fr 1fr;gap:10px}
+}
+@media(max-width:640px){
+  .rail{grid-template-columns:1fr}
+  .brand h1{font-size:15px}
+  .bal-v{font-size:27px}
+  .top{padding:12px 14px}
+  .wrap{padding:12px}
+  #logBox{height:300px}
+  .size-row{grid-template-columns:1fr;gap:6px;padding:0 12px 12px}
+  .size-row label{letter-spacing:.08em}
+}
+</style>
+</head>
+<body>
+<div class="scan"></div>
+
+<header class="top">
+  <div class="brand">
+    <svg viewBox="0 0 40 40" fill="none">
+      <path d="M20 3 34 11v18L20 37 6 29V11L20 3Z" stroke="#3fd0ff" stroke-width="2"/>
+      <path d="M12 24l5-8.5 3.5 5.5 3-4.5 4.5 7.5" stroke="#3ddc97" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="27.5" cy="13.5" r="1.8" fill="#3ddc97"/>
+    </svg>
+    <div>
+      <h1>MEXC <em>⇄</em> DEX</h1>
+      <small>ARBITRAGE MONITOR · ТОЛЬКО MEXC↔DEX</small>
+    </div>
+  </div>
+  <div class="chips">
+    <span class="chip"><i class="dot off" id="statusDot"></i><span id="statusTxt">ПОДКЛЮЧЕНИЕ…</span></span>
+    <span class="chip">UPTIME UI <b id="uptime">—</b></span>
+    <span class="chip">СИГНАЛЫ <b id="hSig">0</b></span>
+  <span class="chip">FRESH <b id="hFresh">0</b></span>
+    <span class="chip">ПУЛЫ <b id="hPools">0</b></span>
+    <span class="chip">ЦИКЛЫ <b id="hCyc">0</b></span>
+    <span class="chip">ПОСЛ. СИГНАЛ <b id="hLast">—</b></span>
+    <span class="chip">API <b id="hApi" class="bad">…</b></span>
+    <span class="chip"><a href="/alt-cex" target="_blank" rel="noopener" style="color:var(--amber);text-decoration:none;font-weight:700">ALT CEX ↗</a></span>
+  </div>
+</header>
+
+<div class="tape"><div class="tape-track" id="tapeTrack"></div></div>
+
+<main class="wrap">
+  <!-- ЛЕВАЯ КОЛОНКА -->
+  <aside class="rail">
+    <section class="panel">
+      <div class="ph"><span class="t"><i></i>СВОДКА · LIVE СЕЙЧАС</span><span class="chip" style="padding:3px 8px"><i class="dot cy"></i>NOW</span></div>
+      <div class="pb">
+        <div class="bal-l">АКТИВНЫХ ВОЗМОЖНОСТЕЙ</div>
+        <div class="bal-v"><span id="sumTotal">0</span></div>
+        <div class="pnl up" id="sumSub">fresh — · медиана —</div>
+        <canvas id="spark"></canvas>
+        <div class="split">
+          <div class="split-bar"><i id="segClean" style="background:#3ddc97;width:0%"></i><i id="segDirty" style="background:#ffc247;width:0%"></i></div>
+          <div class="split-leg"><span>ЧИСТЫЕ · <b id="legClean">0</b></span><span>С WARNING · <b id="legDirty">0</b></span></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="tiles">
+      <div class="tile"><i>ЧИСТЫЕ</i><b id="tClean">0</b><div class="wbar"><span id="tCleanBar"></span></div></div>
+      <div class="tile"><i>THIN LIQ</i><b id="tThin">0</b><u>ненадёжная котировка</u></div>
+      <div class="tile"><i>МЕД. NET %</i><b id="tMed">—</b><u>по всем сигналам</u></div>
+      <div class="tile"><i>МАКС NET %</i><b id="tMax">—</b><u>лучший сигнал</u></div>
+      <div class="tile"><i>СКАН-ЦИКЛЫ</i><b id="tCyc">0</b><u>avg <span id="tScanMs">—</span></u></div>
+      <div class="tile"><i>ОШИБКИ / WARN</i><b><span id="tErr" class="neg">0</span><span style="color:var(--dim)"> / </span><span id="tWarn" class="wrn">0</span></b><u>из логов бота</u></div>
+    </div>
+
+    <section class="panel">
+      <div class="ph"><span class="t"><i></i>ФИЛЬТРЫ ПРОСМОТРА</span><span class="set-note">только отображение</span></div>
+      <div class="pb set">
+        <div class="srow"><label>МИН. NET % <output id="vMinNet">0.0%</output></label><input type="range" id="setMinNet" min="0" max="5" step="0.1" value="0"></div>
+        <div class="srow"><label>МИН. NET $ <output id="vMinUsd">$0.00</output></label><input type="range" id="setMinUsd" min="0" max="2" step="0.05" value="0"></div>
+        <div class="srow"><label style="margin-bottom:6px">ПОИСК · ТОКЕН / СЕТЬ / DEX</label><input type="text" class="inp" id="sigSearch" placeholder="например CELL, BSC, uniswap…"></div>
+        <div class="tgl-row"><span>ТОЛЬКО СЕССИЯ БОТА</span><label class="tgl"><input type="checkbox" id="tglSession" checked><span></span></label></div>
+        <div class="tgl-row"><span>ЗВУК FRESH (сейчас)</span><label class="tgl"><input type="checkbox" id="tglSound"><span></span></label></div>
+        <div class="tgl-row"><span>АВТО-ОБНОВЛЕНИЕ</span><label class="tgl"><input type="checkbox" id="tglRefresh" checked><span></span></label></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="ph"><span class="t"><i></i>РАСПРЕДЕЛЕНИЯ</span></div>
+      <div class="pb" id="distBox"><div class="empty" style="padding:18px">НЕТ ДАННЫХ</div></div>
+    </section>
+  </aside>
+
+  <!-- ПРАВАЯ КОЛОНКА -->
+  <section class="col">
+    <style>
+      .opp.fresh-opp{border-color:rgba(61,220,151,.65);box-shadow:0 0 14px rgba(61,220,151,.18);animation:freshPulse 2.2s ease-in-out infinite}
+      @keyframes freshPulse{0%,100%{box-shadow:0 0 6px rgba(61,220,151,.12)}50%{box-shadow:0 0 18px rgba(61,220,151,.32)}}
+      .fresh-tag{color:#3ddc97;font-weight:700;letter-spacing:.06em}
+    </style>
+    <section class="panel">
+      <div class="ph">
+        <span class="t"><i></i>СЕЙЧАС · АРБИТРАЖ LIVE</span>
+        <div class="opp-head-extra">
+          <span class="count-badge" id="oppFresh" style="color:#3ddc97">0 FRESH</span>
+          <span class="count-badge" id="oppCount">0 АКТ.</span>
+        </div>
+      </div>
+      <div class="hint">только то, что watcher считает валидным прямо сейчас (переквот &lt;30с = FRESH). История сигналов ниже — не спамит одними монетами.</div>
+      <div id="oppList">
+        <div class="empty"><span class="radar"></span>НЕТ ЖИВЫХ ВОЗМОЖНОСТЕЙ · СКАНЕР ИЩЕТ</div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top:16px">
+      <div class="ph">
+        <span class="t"><i></i>АРХИВ · СДОХШИЕ</span>
+        <span class="chip" style="padding:3px 8px" id="archCount">0</span>
+      </div>
+      <div class="pb" id="archList">
+        <div class="empty">ПУСТО</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="ph">
+        <span class="t"><i></i>ИСТОРИЯ MEXC⇄DEX · УНИКАЛЬНЫЕ</span>
+        <div class="opp-head-extra">
+          <span class="count-badge" id="sigCount">0</span>
+          <span class="set-note" id="sigShown"></span>
+        </div>
+      </div>
+        <div class="hint">1 сигнал на токен+направление (лучший net $) · слайдер объёма по кривой стакана · без лишних RPC</div>
+      <div id="sigList">
+        <div class="empty" id="sigEmpty"><span class="radar"></span>ИСТОРИЯ ПУСТА</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="ph"><span class="t"><i></i>ПУЛЫ В КЭШЕ</span><span class="opp-head-extra"><span class="count-badge" id="poolCount">0</span><input type="text" class="inp" id="poolSearch" placeholder="фильтр…" style="width:150px;padding:5px 9px;font-size:10.5px"></span></div>
+      <div class="tw"><table><thead><tr><th>СЕТЬ</th><th>DEX</th><th>ТОКЕН</th><th>КВОТА</th><th>ПУЛ</th><th>ВЕР</th><th>ДЕП</th><th>ВЫВ</th></tr></thead><tbody id="poolBody"></tbody></table></div>
+    </section>
+
+    <section class="panel">
+      <div class="ph"><span class="t"><i></i>ПРОИЗВОДИТЕЛЬНОСТЬ</span><span class="count-badge" id="perfCount">0</span></div>
+      <div class="tw" style="max-height:240px"><table><thead><tr><th>ЭТАП</th><th>СТАРТ</th><th>ДЛИТ.</th><th>ВСЕГО</th><th>OK</th><th>FAIL</th><th>ИСТОЧНИК</th></tr></thead><tbody id="perfBody"></tbody></table></div>
+    </section>
+
+    <section class="panel">
+      <div class="ph"><span class="t"><i></i>БАЗА ДАННЫХ</span><select class="sel" id="dbSelect"></select></div>
+      <div class="pb" style="padding:0">
+        <div class="hint" id="dbInfo">подключение…</div>
+        <div class="tw" style="max-height:320px"><table><thead id="dbHead"></thead><tbody id="dbBody"></tbody></table></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="ph">
+        <span class="t"><i></i>ЖУРНАЛ БОТА · <span id="logFile" style="letter-spacing:.06em">—</span></span>
+        <span class="paused-badge" id="pausedBadge">⏸ ПАУЗА</span>
+        <span class="key-hint">SPACE — пауза/продолжить</span>
+      </div>
+      <div class="log-bar">
+        <button class="fchip on" data-l="ALL">ВСЕ</button>
+        <button class="fchip" data-l="SCAN">SCAN</button>
+        <button class="fchip" data-l="INFO">INFO</button>
+        <button class="fchip" data-l="SIGNAL">SIGNAL</button>
+        <button class="fchip" data-l="WARN">WARN</button>
+        <button class="fchip" data-l="ERROR">ERROR</button>
+        <input type="text" id="logSearch" placeholder="поиск по логу…">
+        <span class="sp"></span>
+        <button class="btn btn-ghost btn-sm on" id="btnScroll">АВТО-СКРОЛЛ</button>
+        <button class="btn btn-ghost btn-sm" id="btnPause">⏸ ПАУЗА</button>
+        <button class="btn btn-ghost btn-sm" id="btnCopy">КОПИРОВАТЬ</button>
+        <button class="btn btn-ghost btn-sm" id="btnClear">ОЧИСТИТЬ</button>
+      </div>
+      <div id="logBox"></div>
+    </section>
+  </section>
+</main>
+
+<footer>
+  <div class="flinks">
+    <a href="https://www.mexc.com" target="_blank" rel="noopener">MEXC ↗</a>
+    <a href="https://mexcdevelop.github.io/apidocs/" target="_blank" rel="noopener">MEXC API DOCS ↗</a>
+    <a href="https://pancakeswap.finance" target="_blank" rel="noopener">PANCAKESWAP ↗</a>
+    <a href="https://app.uniswap.org" target="_blank" rel="noopener">UNISWAP ↗</a>
+    <a href="https://bscscan.com" target="_blank" rel="noopener">BSCSCAN ↗</a>
+    <a href="https://etherscan.io" target="_blank" rel="noopener">ETHERSCAN ↗</a>
+  </div>
+  <p class="fnote">Центр мониторинга арбитражного бота MEXC ⇄ DEX. Интерфейс read-only: отображает данные, которые пишет бот. Не является инвестиционной рекомендацией.</p>
+  <span class="chip">DASHBOARD v3.0</span>
+</footer>
+
+<div id="toasts"></div>
+
+<script>
+/* ═════════ Утилиты ═════════ */
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtN=(n,d=0)=>{const x=Number(n);return Number.isFinite(x)?x.toLocaleString('ru-RU',{minimumFractionDigits:d,maximumFractionDigits:d}):'—'};
+const pct=v=>{const x=parseFloat(v);return Number.isFinite(x)?x.toFixed(2)+'%':'—'};
+const usd=v=>{
+  const x=parseFloat(v);if(!Number.isFinite(x))return '—';
+  const a=Math.abs(x);
+  if(a===0)return '$0';
+  if(a>=1)return '$'+x.toFixed(2);
+  if(a>=1e-4)return '$'+x.toFixed(4);
+  // Micro-cap VWAP (PIG/ASS/SMARS ~1e-8…1e-10) — keep significant digits.
+  return '$'+x.toExponential(3);
+};
+
+const EXPLORERS={ETHEREUM:'https://etherscan.io',BSC:'https://bscscan.com',POLYGON:'https://polygonscan.com',ARBITRUM:'https://arbiscan.io',BASE:'https://basescan.org',ROBINHOOD:'https://robinhoodchain.blockscout.com'};
+const NET_COLOR={ETHEREUM:'var(--pink)',BSC:'var(--amber)',POLYGON:'var(--blue)',ARBITRUM:'var(--teal)',BASE:'var(--cyan)'};
+function explorerUrl(net,addr){const b=EXPLORERS[(net||'').toUpperCase()];return b&&addr?`${b}/address/${encodeURIComponent(addr)}`:null}
+function explorerLink(net,addr){
+  const u=explorerUrl(net,addr);
+  if(!u)return esc((addr||'').slice(0,18));
+  return `<a href="${esc(u)}" target="_blank" rel="noopener" title="${esc(addr)}">${esc(addr.slice(0,6)+'…'+addr.slice(-4))}</a>`;
+}
+function mexcUrl(coin,quote){return `https://www.mexc.com/trade/${encodeURIComponent(coin)}_${encodeURIComponent(quote||'USDT')}`}
+
+/* ═════════ Состояние ═════════ */
+const S={
+  minNet:0,minUsd:0,q:'',session:true,sound:false,refresh:true,
+  filter:'ALL',logQ:'',logsPaused:false,autoScroll:true,
+  sigCache:[],oppCache:[],lastSigTs:'',firstSigLoad:true,online:null,uptimeBase:0,uptimeAt:0
+};
+
+/* ═════════ Тосты и звук ═════════ */
+function toast(type,title,msg){
+  const t=document.createElement('div');t.className='toast '+type;
+  t.innerHTML=`<h4>${esc(title)}</h4><p>${esc(msg)}</p>`;
+  $('toasts').appendChild(t);
+  setTimeout(()=>{t.classList.add('out');setTimeout(()=>t.remove(),320)},4200);
+}
+let AC=null;
+function beep(f){
+  if(!S.sound)return;
+  try{if(!AC)AC=new (window.AudioContext||window.webkitAudioContext)()}catch(e){return}
+  const o=AC.createOscillator(),g=AC.createGain();
+  o.frequency.value=f;o.type='sine';
+  g.gain.setValueAtTime(0.0001,AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.12,AC.currentTime+0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001,AC.currentTime+0.16);
+  o.connect(g).connect(AC.destination);o.start();o.stop(AC.currentTime+0.18);
+}
+
+/* ═════════ Статус ═════════ */
+function setOnline(ok){
+  if(S.online===ok)return;
+  const was=S.online;S.online=ok;
+  $('statusDot').className='dot '+(ok?'live':'off');
+  $('statusTxt').textContent=ok?'БОТ-СЕРВЕР LIVE':'НЕТ СВЯЗИ';
+  $('hApi').textContent=ok?'OK':'DOWN';
+  $('hApi').className=ok?'ok':'bad';
+  if(was!==null)toast(ok?'ok':'err','СОЕДИНЕНИЕ',ok?'связь с сервером дашборда восстановлена':'сервер дашборда недоступен');
+}
+
+/* ═════════ Сводка ═════════ */
+let spark=[];
+function drawSpark(){
+  const c=$('spark'),dpr=window.devicePixelRatio||1,w=c.clientWidth||280,h=64;
+  c.width=w*dpr;c.height=h*dpr;
+  const g=c.getContext('2d');g.scale(dpr,dpr);g.clearRect(0,0,w,h);
+  if(spark.length<2)return;
+  const mn=Math.min(...spark),mx=Math.max(...spark),rg=(mx-mn)||1;
+  const X=i=>i/(spark.length-1)*(w-6)+3,Y=v=>h-6-((v-mn)/rg)*(h-14);
+  g.beginPath();g.moveTo(X(0),Y(spark[0]));spark.forEach((v,i)=>g.lineTo(X(i),Y(v)));
+  g.lineTo(X(spark.length-1),h);g.lineTo(X(0),h);g.closePath();
+  const gr=g.createLinearGradient(0,0,0,h);gr.addColorStop(0,'rgba(61,220,151,.28)');gr.addColorStop(1,'rgba(61,220,151,0)');
+  g.fillStyle=gr;g.fill();
+  g.beginPath();spark.forEach((v,i)=>i?g.lineTo(X(i),Y(v)):g.moveTo(X(i),Y(v)));
+  g.strokeStyle='#3ddc97';g.lineWidth=1.6;g.lineJoin='round';g.stroke();
+  const lx=X(spark.length-1),ly=Y(spark[spark.length-1]);
+  g.beginPath();g.arc(lx,ly,2.6,0,7);g.fillStyle='#3ddc97';g.fill();
+  g.beginPath();g.arc(lx,ly,6,0,7);g.fillStyle='rgba(61,220,151,.22)';g.fill();
+}
+window.addEventListener('resize',drawSpark);
+
+function distRows(title,obj,warn){
+  const entries=Object.entries(obj||{});
+  if(!entries.length)return'';
+  const max=Math.max(1,...entries.map(e=>e[1]));
+  let h=`<div class="dsub">${esc(title)}</div>`;
+  for(const[k,v]of entries){
+    h+=`<div class="drow"><span class="k" title="${esc(k)}">${esc(k)}</span><span class="dbar${warn?' warn':''}"><span style="width:${Math.round(v/max*100)}%"></span></span><span class="v">${fmtN(v)}</span></div>`;
+  }
+  return h;
+}
+
+async function loadSummary(){
+  try{
+    const r=await fetch('/api/summary?session_only='+S.session);if(!r.ok)throw 0;
+    const s=await r.json();
+    setOnline(true);
+    S.uptimeBase=s.uptime_sec||0;S.uptimeAt=Date.now();
+    $('hSig').textContent=fmtN(s.signals_total);
+    $('hPools').textContent=fmtN(s.pools_cached);
+    $('hCyc').textContent=fmtN(s.scanner_cycles);
+    $('hLast').textContent=s.last_signal_ts?s.last_signal_ts.slice(11,19):'—';
+    // sumTotal/sumSub owned by loadOpps (LIVE now) — do not overwrite with history spam.
+    const total=Math.max(1,s.signals_total),dirty=s.signals_total-s.signals_clean;
+    $('segClean').style.width=(s.signals_clean/total*100)+'%';
+    $('segDirty').style.width=(dirty/total*100)+'%';
+    $('legClean').textContent=fmtN(s.signals_clean);
+    $('legDirty').textContent=fmtN(dirty);
+    $('tClean').textContent=fmtN(s.signals_clean);
+    $('tCleanBar').style.width=(s.signals_clean/total*100)+'%';
+    $('tThin').textContent=fmtN(s.signals_thin);
+    $('tMed').textContent=pct(s.median_profit_pct);
+    $('tMax').textContent=pct(s.max_profit_pct);
+    $('tCyc').textContent=fmtN(s.scanner_cycles);
+    $('tScanMs').textContent=s.avg_scan_ms?fmtN(s.avg_scan_ms)+' мс':'—';
+    $('tErr').textContent=fmtN(s.errors);
+    $('tWarn').textContent=fmtN(s.warnings);
+    $('distBox').innerHTML=(
+      distRows('СИГНАЛЫ ПО СЕТЯМ',s.network_dist)+
+      distRows('СИГНАЛЫ ПО DEX',s.dex_dist)+
+      distRows('ПУЛЫ ПО СЕТЯМ',s.pool_net_dist)+
+      distRows('WARNINGS',s.warning_dist,true)
+    )||'<div class="empty" style="padding:18px">НЕТ ДАННЫХ</div>';
+  }catch(e){setOnline(false)}
+}
+
+/* uptime tick */
+setInterval(()=>{
+  if(!S.uptimeAt)return;
+  const u=S.uptimeBase+Math.floor((Date.now()-S.uptimeAt)/1000);
+  const d=Math.floor(u/86400),h=String(Math.floor(u%86400/3600)).padStart(2,'0'),
+        m=String(Math.floor(u%3600/60)).padStart(2,'0'),s=String(u%60).padStart(2,'0');
+  $('uptime').textContent=(d?d+'д ':'')+`${h}:${m}:${s}`;
+},1000);
+
+/* ═════════ Сигналы ═════════ */
+function riskOf(sig){
+  const w=sig.warnings||[];
+  if(!w.length)return{cls:'r-low',label:'ЧИСТЫЙ'};
+  if(w.some(x=>String(x).includes('thin_liquidity')))return{cls:'r-high',label:'THIN LIQ'};
+  return{cls:'r-med',label:'WARN'};
+}
+function venueBadges(sig){
+  const dexName=(sig.dex||'DEX').toUpperCase();
+  const mexc=`<span class="vb" style="color:var(--blue);border-color:rgba(90,162,255,.4);background:rgba(90,162,255,.08)">MEXC</span>`;
+  const nc=NET_COLOR[(sig.network||'').toUpperCase()]||'var(--cyan)';
+  const dex=`<span class="vb" style="color:${nc};border-color:${nc};background:transparent">${esc(dexName)} · ${esc(sig.network||'')}</span>`;
+  return sig.direction==='MEXC_BUY_DEX_SELL'
+    ?mexc+'<span class="arr">➜</span>'+dex
+    :dex+'<span class="arr">➜</span>'+mexc;
+}
+function parseCurve(sig){
+  const raw=sig.size_curve;
+  if(!Array.isArray(raw)||!raw.length){
+    const size=parseFloat(sig.size_optimal_usd||sig.base_amount_usd);
+    const nu=parseFloat(sig.net_profit_usd),np=parseFloat(sig.net_profit_pct);
+    if(!Number.isFinite(size)||size<=0)return [];
+    return[{size_usd:size,net_usd:nu,net_pct:np,vwap:parseFloat(sig.orderbook_avg_price),impact_pct:parseFloat(sig.orderbook_impact_pct)}];
+  }
+  return raw.map(p=>({
+    size_usd:parseFloat(p.size_usd),
+    net_usd:parseFloat(p.net_usd),
+    net_pct:parseFloat(p.net_pct),
+    vwap:parseFloat(p.vwap),
+    impact_pct:parseFloat(p.impact_pct),
+    tokens:parseFloat(p.tokens),
+  })).filter(p=>Number.isFinite(p.size_usd));
+}
+function nearestCurvePoint(curve,size){
+  if(!curve.length)return null;
+  let best=curve[0],bd=Math.abs(curve[0].size_usd-size);
+  for(const p of curve){
+    const d=Math.abs(p.size_usd-size);
+    if(d<bd){best=p;bd=d}
+  }
+  return best;
+}
+function sizeSliderHtml(sig,idx){
+  const curve=parseCurve(sig);
+  if(curve.length<1)return`<div class="size-empty">кривая размера недоступна (старый сигнал без size_curve)</div>`;
+  const min=parseFloat(sig.size_min_usd)||curve[0].size_usd;
+  const max=parseFloat(sig.size_max_usd)||curve[curve.length-1].size_usd;
+  const opt=parseFloat(sig.size_optimal_usd||sig.base_amount_usd)||min;
+  const lo=Math.min(min,max),hi=Math.max(min,max);
+  const val=Math.min(hi,Math.max(lo,opt));
+  const step=hi>lo?((hi-lo)/200):0.01;
+  return`<div class="size-row" data-sig-idx="${idx}">
+    <label>ОБЪЁМ $</label>
+    <input type="range" class="sizeSlider" min="${lo}" max="${hi}" step="${step}" value="${val}" data-idx="${idx}">
+    <div class="size-meta" id="sizeMeta${idx}">—</div>
+  </div>`;
+}
+function updateSizeMeta(idx){
+  const sig=S.sigCache[idx];if(!sig)return;
+  const el=$('sizeMeta'+idx);const slider=document.querySelector(`.sizeSlider[data-idx="${idx}"]`);
+  if(!el||!slider)return;
+  const curve=parseCurve(sig);
+  const p=nearestCurvePoint(curve,parseFloat(slider.value));
+  if(!p){el.textContent='—';return}
+  const ok=Number.isFinite(p.net_usd)&&p.net_usd>0;
+  el.innerHTML=`<b>${usd(p.size_usd)}</b> · net <b class="${ok?'ok':'bad'}">${usd(p.net_usd)}</b> (${pct(p.net_pct)}) · impact ${pct(p.impact_pct)}`;
+  // Live-update main NET cells for this card.
+  const wrap=slider.closest('.opp-wrap');
+  if(wrap){
+    const netPct=wrap.querySelector('[data-live="net_pct"]');
+    const netUsd=wrap.querySelector('[data-live="net_usd"]');
+    const sizeCell=wrap.querySelector('[data-live="size"]');
+    const impactCell=wrap.querySelector('[data-live="impact"]');
+    const col=ok?'var(--green)':'var(--red)';
+    if(netPct){
+      netPct.textContent=(Number.isFinite(p.net_pct)&&p.net_pct>=0?'+':'')+pct(p.net_pct);
+      netPct.style.color=col;
+    }
+    if(netUsd){netUsd.textContent=usd(p.net_usd);netUsd.style.color=col}
+    if(sizeCell)sizeCell.innerHTML=`${usd(p.vwap)} <span class="mut">·</span> ${usd(p.size_usd)}`;
+    if(impactCell)impactCell.textContent=pct(p.impact_pct);
+  }
+}
+function renderSignals(){
+  const list=$('sigList');
+  const rows=S.sigCache.filter(s=>{
+    const np=parseFloat(s.net_profit_pct);
+    const nu=parseFloat(s.net_profit_usd);
+    if(S.minNet>0&&(!Number.isFinite(np)||np<S.minNet))return false;
+    if(S.minUsd>0&&(!Number.isFinite(nu)||nu<S.minUsd))return false;
+    if(S.q&&!JSON.stringify([s.token_coin,s.network,s.dex,s.direction]).toLowerCase().includes(S.q))return false;
+    return true;
+  });
+  const fp=rows.length+'|'+(rows[0]&&rows[0].timestamp||'')+'|'+S.minNet+'|'+S.minUsd+'|'+S.q+'|'+S.sigCache.length;
+  if(fp===renderSignals._fp)return;
+  renderSignals._fp=fp;
+  $('sigCount').textContent=S.sigCache.length+' УНИК.';
+  $('sigShown').textContent=rows.length===S.sigCache.length?'':`показано ${rows.length}`;
+  if(!rows.length){
+    list.innerHTML=`<div class="empty" id="sigEmpty"><span class="radar"></span>${S.sigCache.length?'ВСЁ СКРЫТО ФИЛЬТРАМИ':'ИСТОРИЯ ПУСТА'}</div>`;
+    return;
+  }
+  let h='';
+  rows.slice(0,120).forEach((s,i)=>{
+    const idx=S.sigCache.indexOf(s);
+    const np=parseFloat(s.net_profit_pct),low=Number.isFinite(np)&&np<1;
+    const risk=riskOf(s);
+    const poolU=explorerUrl(s.network,s.pool_address);
+    h+=`<div class="opp-wrap">
+      <div class="opp${low?' low':''}">
+      <div class="opp-main">
+        <div class="pair-name">${esc(s.token_coin||'?')}/${esc(s.mexc_quote_asset||'USDT')}<small>${esc((s.timestamp||'').slice(11,19))}</small></div>
+        <div class="route">${venueBadges(s)}</div>
+        <div class="opp-links">
+          <a href="${mexcUrl(s.token_coin,s.mexc_quote_asset)}" target="_blank" rel="noopener">MEXC ↗</a>
+          ${poolU?`<a href="${poolU}" target="_blank" rel="noopener">POOL ↗</a>`:''}
+        </div>
+      </div>
+      <div class="opp-cell"><i>MEXC VWAP · SIZE</i><b data-live="size">${usd(s.orderbook_avg_price)} <span class="mut">·</span> ${usd(s.base_amount_usd)}</b></div>
+      <div class="opp-cell"><i>BOOK IMPACT</i><b data-live="impact">${pct(s.orderbook_impact_pct)}</b></div>
+      <div class="opp-cell opp-spread"><i>NET %</i><b data-live="net_pct">${Number.isFinite(np)&&np>=0?'+':''}${pct(s.net_profit_pct)}</b></div>
+      <div class="opp-cell opp-profit"><i>NET $</i><b data-live="net_usd">${usd(s.net_profit_usd)}</b></div>
+      <div class="opp-cell"><i>СТАТУС <b class="${risk.cls}" style="font-size:10px">${risk.label}</b></i><div class="opp-warn">${esc((s.warnings||[]).join(', '))||'<span class="mut">без предупреждений</span>'}</div></div>
+      </div>
+      ${sizeSliderHtml(s,idx)}
+    </div>`;
+  });
+  list.innerHTML=h;
+  list.querySelectorAll('.sizeSlider').forEach(sl=>{
+    const idx=parseInt(sl.dataset.idx,10);
+    updateSizeMeta(idx);
+    sl.addEventListener('input',()=>updateSizeMeta(idx));
+  });
+}
+function buildTape(){
+  const track=$('tapeTrack');
+  const items=(S.oppCache||[]).filter(o=>o.fresh).slice(0,14);
+  const fallback=(S.oppCache||[]).slice(0,14);
+  const use=items.length?items:fallback;
+  track.parentElement.style.display=use.length?'flex':'none';
+  if(!use.length){track.innerHTML='';return}
+  const fp=use.length+'|'+(use[0]&&(use[0].key||use[0].token_coin)||'');
+  if(fp===buildTape._fp)return;
+  buildTape._fp=fp;
+  const seg=use.map(s=>{
+    const np=parseFloat(s.net_profit_pct),okc=Number.isFinite(np)&&np>=0;
+    return `<span class="ti"><span class="s">${esc(s.token_coin)}/${esc(s.mexc_quote_asset||'USDT')}</span><span class="p">${esc(s.network)} · ${esc(s.dex||'')}</span><span class="c ${okc?'up':'dn'}">${okc?'▲':'▼'} ${pct(s.net_profit_pct)}</span></span>`;
+  }).join('');
+  track.innerHTML=seg+seg;
+}
+function dedupeRank(s){
+  const curve=s.size_curve||[];
+  const hasCurve=curve.length?1:0;
+  let hasPos=0;
+  for(const p of curve){if((parseFloat(p.net_usd)||0)>0){hasPos=1;break}}
+  const nu=parseFloat(s.net_profit_usd)||0;
+  return [hasCurve,hasPos,s.timestamp||'',nu];
+}
+function dedupeSignals(sigs){
+  // One per network+token+direction; prefer usable curve, then newer, then net $.
+  const best=new Map();
+  for(const s of sigs){
+    const k=[(s.network||'').toUpperCase(),(s.token_coin||'').toUpperCase(),s.direction||''].join('|');
+    const prev=best.get(k);
+    if(!prev){best.set(k,s);continue}
+    const a=dedupeRank(s),b=dedupeRank(prev);
+    let win=false;
+    for(let i=0;i<a.length;i++){if(a[i]>b[i]){win=true;break}if(a[i]<b[i])break}
+    if(win)best.set(k,s);
+  }
+  return [...best.values()];
+}
+async function loadSignals(){
+  const seq=loadSignals._seq=(loadSignals._seq||0)+1;
+  try{
+    const r=await fetch('/api/signals?limit=500&session_only='+S.session);if(!r.ok)return;
+    const d=await r.json();
+    if(seq!==loadSignals._seq)return;
+    const sigs=dedupeSignals(d.signals||[]);
+    // History only — no toast spam for repeated coins.
+    S.firstSigLoad=false;
+    S.sigCache=sigs;
+    $('sigCount').textContent=sigs.length+' УНИК.';
+    renderSignals();
+  }catch(e){}
+}
+
+/* ═════════ Live-возможности watcher ═════════ */
+async function loadArchive(){
+  try{
+    const r=await fetch('/api/archive?limit=80');if(!r.ok)return;
+    const d=await r.json();
+    const items=d.items||[];
+    $('archCount').textContent=items.length+' ЗАП.';
+    const list=$('archList');
+    if(!items.length){list.innerHTML='<div class="empty">ПУСТО</div>';return}
+    list.innerHTML=items.slice(0,40).map(o=>{
+      const ts=o.archived_ts?new Date(o.archived_ts*1000).toISOString().slice(11,19):'';
+      return `<div class="opp low" style="opacity:.75">
+        <div class="opp-main"><div class="pair-name">${esc(o.token_coin||'?')}<small>${esc(ts)} · ${esc(o.reason||'')}</small></div>
+        <div class="route">${esc(o.network||'')} · ${esc(o.direction||'')}</div></div>
+        <div class="opp-cell"><i>NET %</i><b>${pct(o.net_profit_pct)}</b></div>
+        <div class="opp-cell"><i>SIZE</i><b>${usd(o.base_amount_usd)}</b></div>
+      </div>`;
+    }).join('');
+  }catch(e){}
+}
+async function loadOpps(){
+  try{
+    const r=await fetch('/api/opportunities');if(!r.ok)return;
+    const d=await r.json();
+    const opps=d.opportunities||[];
+    S.oppCache=opps;
+    $('oppCount').textContent=(d.count||0)+' АКТ.';
+    $('oppFresh').textContent=(d.fresh_count||0)+' FRESH';
+    $('hFresh').textContent=d.fresh_count||0;
+    $('hFresh').className=d.fresh_count?'ok':'';
+    $('sumTotal').textContent=String(d.count||0);
+    const nets=opps.map(o=>parseFloat(o.net_profit_pct)).filter(Number.isFinite).sort((a,b)=>a-b);
+    const med=nets.length?nets[Math.floor(nets.length/2)]:null;
+    $('sumSub').textContent=`fresh ${d.fresh_count||0} · медиана ${med==null?'—':pct(med)}`;
+    spark=opps.slice(0,56).map(o=>parseFloat(o.net_profit_pct)).filter(Number.isFinite).reverse();
+    drawSpark();
+    const freshNow=new Set(opps.filter(o=>o.fresh).map(o=>o.key));
+    const seen=loadOpps._seen||new Set();
+    const soundOn=$('tglSound')&&$('tglSound').checked;
+    for(const o of opps){
+      if(o.fresh&&!seen.has(o.key)){
+        toast('ok','FRESH СЕЙЧАС',`${o.token_coin} · ${o.network} · net ${pct(o.net_profit_pct)}`);
+        if(soundOn)beep(1200);
+      }
+    }
+    loadOpps._seen=freshNow;
+    buildTape();
+    const list=$('oppList');
+    if(!opps.length){
+      list.innerHTML='<div class="empty"><span class="radar"></span>НЕТ ЖИВЫХ ВОЗМОЖНОСТЕЙ · СКАНЕР ИЩЕТ</div>';
+      return;
+    }
+    const ordered=[...opps].sort((a,b)=>(b.fresh?1:0)-(a.fresh?1:0)||(parseFloat(b.net_profit_pct)||0)-(parseFloat(a.net_profit_pct)||0));
+    let h='';
+    for(const o of ordered.slice(0,40)){
+      const poolU=explorerUrl(o.network,o.pool_address);
+      const np=parseFloat(o.net_profit_pct);
+      h+=`<div class="opp${o.fresh?' fresh-opp':' low'}">
+        <div class="opp-main">
+          <div class="pair-name">${esc(o.token_coin||'?')}<small>${o.fresh?'<span class="fresh-tag"> ● СЕЙЧАС</span>':' переквот '+fmtN(o.requote_age_sec)+'с назад'}</small></div>
+          <div class="route">${venueBadges(o)}</div>
+          <div class="opp-links">
+            <a href="${mexcUrl(o.token_coin,'USDT')}" target="_blank" rel="noopener">MEXC ↗</a>
+            ${poolU?`<a href="${poolU}" target="_blank" rel="noopener">POOL ↗</a>`:''}
+          </div>
+        </div>
+        <div class="opp-cell"><i>ОБЪЁМ</i><b>${usd(o.base_amount_usd)}</b></div>
+        <div class="opp-cell"><i>NET СТАРТ</i><b>${pct(o.initial_net_profit_pct)}</b></div>
+        <div class="opp-cell opp-spread"><i>NET СЕЙЧАС</i><b>${Number.isFinite(np)&&np>=0?'+':''}${pct(o.net_profit_pct)}</b></div>
+        <div class="opp-cell"><i>ПЕРЕКВОТОВ</i><b>${fmtN(o.requote_count)}</b></div>
+        <div class="opp-cell"><i>ВОЗРАСТ</i><b>${fmtN(o.age_sec)}с</b></div>
+      </div>`;
+    }
+    list.innerHTML=h;
+  }catch(e){}
+}
+
+/* ═════════ Пулы ═════════ */
+let POOLS=[];
+function renderPools(){
+  const f=($('poolSearch').value||'').toLowerCase();
+  const rows=POOLS.filter(p=>!f||JSON.stringify([p.network,p.dex,p.token_coin,p.quote_coin,p.stablecoin_coin]).toLowerCase().includes(f));
+  $('poolCount').textContent=fmtN(rows.length);
+  let h='';
+  for(const p of rows.slice(0,600)){
+    const tok=p.token_coin||p.stablecoin_coin||'?';
+    h+=`<tr><td>${esc(p.network)}</td><td>${esc(p.dex)}</td>
+      <td><a href="${mexcUrl(tok,p.quote_coin)}" target="_blank" rel="noopener"><b>${esc(tok)}</b></a></td>
+      <td>${esc(p.quote_coin||p.stablecoin_coin||'')}</td>
+      <td class="mut">${explorerLink(p.network,p.pool_address)}</td>
+      <td>${esc(p.pool_version||'')}</td>
+      <td class="${p.token_deposit_enable?'pos':'neg'}">${p.token_deposit_enable?'✓':'✗'}</td>
+      <td class="${p.token_withdraw_enable?'pos':'neg'}">${p.token_withdraw_enable?'✓':'✗'}</td></tr>`;
+  }
+  $('poolBody').innerHTML=h||'<tr><td colspan="8" class="mut">нет пулов</td></tr>';
+}
+async function loadPools(){
+  try{
+    const r=await fetch('/api/pools?limit=1000');if(!r.ok)return;
+    const d=await r.json();POOLS=d.pools||[];renderPools();
+  }catch(e){}
+}
+$('poolSearch').addEventListener('input',renderPools);
+
+/* ═════════ Производительность ═════════ */
+function fmtTs(t){
+  if(t==null)return'—';
+  if(typeof t==='number')return new Date(t*1000).toTimeString().slice(0,8);
+  return String(t).slice(11,19)||'—';
+}
+async function loadPerf(){
+  try{
+    const r=await fetch('/api/performance?limit=150');if(!r.ok)return;
+    const d=await r.json();
+    $('perfCount').textContent=fmtN(d.count);
+    let h='';
+    for(const p of d.records||[]){
+      h+=`<tr><td>${esc(p.stage)}</td><td class="mut">${fmtTs(p.started_at)}</td>
+        <td>${fmtN(p.duration_ms)} мс</td><td>${fmtN(p.items_total)}</td>
+        <td class="pos">${fmtN(p.items_success)}</td><td class="${p.items_failed?'neg':'mut'}">${fmtN(p.items_failed)}</td>
+        <td class="mut">${esc(p.source||'')}</td></tr>`;
+    }
+    $('perfBody').innerHTML=h||'<tr><td colspan="7" class="mut">нет записей</td></tr>';
+  }catch(e){}
+}
+
+/* ═════════ БД ═════════ */
+async function loadDbTables(){
+  try{
+    const r=await fetch('/api/db/tables');
+    const d=await r.json();
+    if(d.error){$('dbInfo').textContent='⚠ '+d.error;return}
+    const sel=$('dbSelect'),cur=sel.value;
+    const html=(d.tables||[]).map(t=>`<option value="${esc(t.name)}">${esc(t.name)} (${esc(t.rows)})</option>`).join('');
+    if(html!==loadDbTables._html){
+      loadDbTables._html=html;
+      sel.innerHTML=html;
+      if(cur&&[...sel.options].some(o=>o.value===cur))sel.value=cur;
+    }
+    if(sel.value&&!loadDbTables._init){loadDbTables._init=true;loadDbRows(sel.value)}
+  }catch(e){}
+}
+async function loadDbRows(name){
+  const seq=loadDbRows._seq=(loadDbRows._seq||0)+1;
+  try{
+    const r=await fetch('/api/db/table/'+encodeURIComponent(name)+'?limit=100');
+    const d=await r.json();
+    if(seq!==loadDbRows._seq)return;
+    if(d.error){$('dbInfo').textContent='⚠ '+d.error;return}
+    $('dbInfo').textContent=`${d.columns.length} колонок · показано ${d.rows.length}`;
+    $('dbHead').innerHTML='<tr>'+d.columns.map(c=>`<th>${esc(c)}</th>`).join('')+'</tr>';
+    $('dbBody').innerHTML=d.rows.map(row=>'<tr>'+d.columns.map(c=>`<td>${esc(row[c])}</td>`).join('')+'</tr>').join('');
+  }catch(e){}
+}
+$('dbSelect').addEventListener('change',e=>loadDbRows(e.target.value));
+
+/* ═════════ Логи ═════════ */
+let LOG_LINES=[];
+function logLevel(line){
+  const u=line.toUpperCase();
+  if(u.includes('ERROR')||u.includes('TRACEBACK')||u.includes('EXCEPTION')||u.includes('CRITICAL'))return'ERROR';
+  if(u.includes('WARNING'))return'WARN';
+  if(u.includes('SIGNAL')||u.includes('ARBITRAGE'))return'SIGNAL';
+  if(u.includes('SCANNER_CYCLE')||u.includes('POOL_DISCOVERY')||u.includes('SCAN'))return'SCAN';
+  return'INFO';
+}
+function renderLogs(){
+  const box=$('logBox');
+  const atBottom=box.scrollTop+box.clientHeight>=box.scrollHeight-40;
+  let h='';
+  for(const l of LOG_LINES){
+    const lv=logLevel(l);
+    if(S.filter!=='ALL'&&lv!==S.filter)continue;
+    if(S.logQ&&!l.toLowerCase().includes(S.logQ))continue;
+    h+=`<div class="ll"><span class="lv lv-${lv}">${lv}</span><span class="m">${esc(l)}</span></div>`;
+  }
+  box.innerHTML=h||'<div class="ll"><span class="m" style="color:var(--dim)">пусто</span></div>';
+  if(S.autoScroll&&(atBottom||!box.dataset.init)){box.scrollTop=box.scrollHeight;box.dataset.init='1'}
+}
+async function loadLogs(){
+  if(S.logsPaused)return;
+  try{
+    const r=await fetch('/api/logs?tail=400');if(!r.ok)return;
+    const d=await r.json();
+    $('logFile').textContent=d.file||'нет логов';
+    $('logFile').title=(d.available||[]).join('\n');
+    LOG_LINES=d.lines||[];
+    renderLogs();
+  }catch(e){}
+}
+document.querySelectorAll('.fchip').forEach(ch=>ch.addEventListener('click',()=>{
+  document.querySelectorAll('.fchip').forEach(c=>c.classList.remove('on'));
+  ch.classList.add('on');S.filter=ch.dataset.l;renderLogs();
+}));
+$('logSearch').addEventListener('input',e=>{S.logQ=e.target.value.trim().toLowerCase();renderLogs()});
+$('btnPause').addEventListener('click',()=>{
+  S.logsPaused=!S.logsPaused;
+  $('btnPause').textContent=S.logsPaused?'▶ ДАЛЕЕ':'⏸ ПАУЗА';
+  $('btnPause').classList.toggle('on',S.logsPaused);
+  $('pausedBadge').style.display=S.logsPaused?'inline-block':'none';
+});
+$('btnScroll').addEventListener('click',()=>{
+  S.autoScroll=!S.autoScroll;
+  $('btnScroll').classList.toggle('on',S.autoScroll);
+  if(S.autoScroll)$('logBox').scrollTop=$('logBox').scrollHeight;
+});
+$('btnCopy').addEventListener('click',()=>{
+  const text=LOG_LINES.join('\n');
+  if(!navigator.clipboard){
+    const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);
+    ta.select();let ok=false;try{ok=document.execCommand('copy')}catch(e){}ta.remove();
+    toast(ok?'ok':'warn',ok?'ЛОГ СКОПИРОВАН':'ОШИБКА',ok?LOG_LINES.length+' строк в буфере обмена':'не удалось скопировать');
+    return;
+  }
+  navigator.clipboard.writeText(text)
+    .then(()=>toast('ok','ЛОГ СКОПИРОВАН',LOG_LINES.length+' строк в буфере обмена'))
+    .catch(()=>toast('warn','ОШИБКА','не удалось скопировать'));
+});
+$('btnClear').addEventListener('click',()=>{
+  LOG_LINES=[];renderLogs();
+  if(!S.logsPaused)$('btnPause').click();
+  toast('warn','ЖУРНАЛ ОЧИЩЕН','опрос на паузе — нажмите ▶ ДАЛЕЕ для продолжения');
+});
+window.addEventListener('keydown',e=>{
+  if(e.code==='Space'&&!/INPUT|TEXTAREA|SELECT|BUTTON/.test(document.activeElement.tagName)){e.preventDefault();$('btnPause').click()}
+});
+
+/* ═════════ Фильтры ═════════ */
+$('setMinNet').addEventListener('input',e=>{S.minNet=+e.target.value;$('vMinNet').textContent=S.minNet.toFixed(1)+'%';renderSignals()});
+$('setMinUsd').addEventListener('input',e=>{S.minUsd=+e.target.value;$('vMinUsd').textContent='$'+S.minUsd.toFixed(2);renderSignals()});
+$('sigSearch').addEventListener('input',e=>{S.q=e.target.value.trim().toLowerCase();renderSignals()});
+$('tglSession').addEventListener('change',e=>{S.session=e.target.checked;S.firstSigLoad=true;renderSignals._fp='';loadSignals();loadSummary()});
+$('tglSound').addEventListener('change',e=>{S.sound=e.target.checked;if(S.sound)beep(660)});
+$('tglRefresh').addEventListener('change',e=>{
+  S.refresh=e.target.checked;
+  toast(S.refresh?'ok':'warn','АВТО-ОБНОВЛЕНИЕ',S.refresh?'опрос API возобновлён':'опрос API остановлен');
+});
+
+/* ═════════ Опрос ═════════ */
+function every(ms,fn){setInterval(()=>{if(S.refresh)fn()},ms)}
+loadSummary();loadSignals();loadOpps();loadArchive();loadPools();loadPerf();loadDbTables();loadLogs();
+every(4000,loadSummary);
+every(5000,loadSignals);
+every(5000,loadOpps);
+every(10000,loadArchive);
+every(15000,loadPools);
+every(8000,loadPerf);
+every(3000,loadLogs);
+every(30000,loadDbTables);
+</script>
+</body>
+</html>

@@ -1,0 +1,722 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MEXC ⇄ DEX · Арбитражный бот — Центр мониторинга</title>
+<link rel="icon" href="data:imagesvg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%2306090e'/><path d='M7 21l5-9 3.5 5.5 3-4.5 6.5 8' stroke='%233ddc97' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+<link rel="preconnect" href="https://cdn.jsdelivr.net">
+<link href="https://cdn.jsdelivr.net/fontsource/css/unbounded@latest/index.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/fontsource/css/manrope@latest/index.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/fontsource/css/jetbrains-mono@latest/index.css" rel="stylesheet">
+<style>
+:root{
+  --bg:#06090e;--p1:#0d141d;--p2:#0a1017;--line:#1b2735;--line2:#2a3c52;
+  --tx:#e6eef6;--mut:#7c90a5;--dim:#4d6178;
+  --cyan:#3fd0ff;--green:#3ddc97;--red:#ff5c6c;--amber:#ffc247;--blue:#5aa2ff;--teal:#2dd4bf;--pink:#ff8fab;
+  --fd:'Unbounded',system-ui,sans-serif;--fb:'Manrope',system-ui,sans-serif;--fm:'JetBrains Mono',ui-monospace,monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scrollbar-color:#22344a #0a1017}
+body{background:var(--bg);color:var(--tx);font:14px/1.5 var(--fb);min-height:100vh;overflow-x:hidden}
+body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(rgba(63,208,255,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(63,208,255,.045) 1px,transparent 1px);background-size:44px 44px;pointer-events:none;z-index:0;-webkit-mask-image:radial-gradient(ellipse 95% 75% at 50% 0%,#000 25%,transparent 100%);mask-image:radial-gradient(ellipse 95% 75% at 50% 0%,#000 25%,transparent 100%)}
+body::after{content:'';position:fixed;inset:0;background:radial-gradient(720px 440px at 10% -8%,rgba(63,208,255,.13),transparent 62%),radial-gradient(660px 420px at 94% 112%,rgba(61,220,151,.09),transparent 62%);pointer-events:none;z-index:0}
+.scan{position:fixed;inset:0;pointer-events:none;z-index:60;background:repeating-linear-gradient(0deg,rgba(255,255,255,.015) 0 1px,transparent 1px 3px)}
+::selection{background:rgba(63,208,255,.3)}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:#1e2d3f;border-radius:5px;border:2px solid #0a1017}
+::-webkit-scrollbar-thumb:hover{background:#2b3f57}
+
+/* ── Шапка ── */
+.top{position:relative;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 20px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(13,20,29,.92),rgba(10,16,23,.78));flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:12px}
+.brand svg{width:40px;height:40px;flex:none;filter:drop-shadow(0 0 10px rgba(63,208,255,.35))}
+.brand h1{font:800 17px/1.1 var(--fd);letter-spacing:.02em}
+.brand h1 em{font-style:normal;color:var(--cyan)}
+.brand small{display:block;font:600 9px var(--fm);letter-spacing:.26em;color:var(--mut);margin-top:4px}
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:7px;font:600 10px var(--fm);letter-spacing:.1em;color:var(--mut);border:1px solid var(--line);background:rgba(13,20,29,.6);padding:6px 10px;border-radius:4px}
+.chip b{color:var(--tx);font-weight:700;font-variant-numeric:tabular-nums}
+.chip b.ok{color:var(--green)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--dim);flex:none}
+.dot.live{background:var(--green);animation:pulse 1.6s infinite}
+.dot.cy{background:var(--cyan);animation:pulse 1.6s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(61,220,151,.55)}70%{box-shadow:0 0 0 7px rgba(61,220,151,0)}100%{box-shadow:0 0 0 0 rgba(61,220,151,0)}}
+
+/* ── Бегущая строка ── */
+.tape{position:relative;z-index:2;overflow:hidden;border-bottom:1px solid var(--line);background:#080d13;height:36px;display:flex;align-items:center}
+.tape-track{display:flex;width:max-content;animation:tape 48s linear infinite}
+.tape:hover .tape-track{animation-play-state:paused}
+@keyframes tape{to{transform:translateX(-50%)}}
+.ti{display:inline-flex;align-items:center;gap:8px;padding:0 22px;font:600 11px var(--fm);white-space:nowrap;border-right:1px solid var(--line);height:36px}
+.ti .s{color:var(--mut);letter-spacing:.08em}
+.ti .p{color:var(--tx);font-variant-numeric:tabular-nums}
+.ti .c{font-size:10px}
+.up{color:var(--green)}.dn{color:var(--red)}
+
+/* ── Сетка ── */
+.wrap{position:relative;z-index:2;max-width:1560px;margin:0 auto;padding:18px;display:grid;grid-template-columns:338px 1fr;gap:16px;align-items:start}
+.rail,.col{display:flex;flex-direction:column;gap:16px;min-width:0}
+
+/* ── Панели ── */
+.panel{position:relative;background:linear-gradient(180deg,var(--p1),var(--p2));border:1px solid var(--line);border-radius:8px}
+.panel::before,.panel::after{content:'';position:absolute;width:14px;height:14px;pointer-events:none;z-index:1}
+.panel::before{top:-1px;left:-1px;border-top:2px solid rgba(63,208,255,.55);border-left:2px solid rgba(63,208,255,.55);border-radius:8px 0 0 0}
+.panel::after{bottom:-1px;right:-1px;border-bottom:2px solid rgba(61,220,151,.45);border-right:2px solid rgba(61,220,151,.45);border-radius:0 0 8px 0}
+.ph{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.ph .t{font:700 10px var(--fm);letter-spacing:.24em;color:var(--mut);display:flex;align-items:center;gap:8px}
+.ph .t i{width:6px;height:6px;background:var(--cyan);border-radius:1px;box-shadow:0 0 8px rgba(63,208,255,.8);flex:none}
+.pb{padding:14px}
+
+/* ── Баланс ── */
+.bal-l{font:600 9.5px var(--fm);letter-spacing:.22em;color:var(--mut)}
+.bal-v{font:800 33px/1.15 var(--fd);letter-spacing:.01em;margin:7px 0 3px;font-variant-numeric:tabular-nums}
+.bal-v small{font:700 14px var(--fd);color:var(--mut)}
+.pnl{font:700 12px var(--fm)}
+#spark{width:100%;height:64px;margin-top:12px;display:block}
+.split{margin-top:12px}
+.split-bar{display:flex;height:8px;border-radius:3px;overflow:hidden;border:1px solid var(--line)}
+.split-bar i{transition:width .6s ease;display:block}
+.split-leg{display:flex;justify-content:space-between;margin-top:7px;font:600 9.5px var(--fm);color:var(--mut);gap:8px}
+.split-leg b{color:var(--tx);font-variant-numeric:tabular-nums}
+
+/* ── Плитки ── */
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.tile{background:linear-gradient(180deg,var(--p1),var(--p2));border:1px solid var(--line);border-radius:8px;padding:12px 14px;transition:border-color .25s,transform .25s}
+.tile:hover{border-color:var(--line2);transform:translateY(-2px)}
+.tile i{font:600 8.5px var(--fm);letter-spacing:.18em;color:var(--mut);font-style:normal;display:block}
+.tile b{display:block;font:700 22px/1.25 var(--fd);margin-top:5px;font-variant-numeric:tabular-nums}
+.tile u{text-decoration:none;font:600 9px var(--fm);color:var(--dim)}
+.wbar{height:4px;background:var(--line);border-radius:2px;margin-top:8px;overflow:hidden}
+.wbar span{display:block;height:100%;background:linear-gradient(90deg,var(--cyan),var(--green));width:0;transition:width .6s}
+
+/* ── Настройки ── */
+.set{display:flex;flex-direction:column;gap:13px}
+.srow label{display:flex;justify-content:space-between;font:600 9.5px var(--fm);letter-spacing:.14em;color:var(--mut);margin-bottom:6px}
+.srow label output{color:var(--cyan);font-weight:700}
+input[type=range]{width:100%;accent-color:var(--cyan);cursor:pointer}
+input[type=number]{background:#0a111a;border:1px solid var(--line);color:var(--tx);font:600 12px var(--fm);padding:7px 9px;border-radius:4px;width:100%;outline:none;transition:border-color .2s}
+input[type=number]:focus{border-color:var(--cyan)}
+.tgl-row{display:flex;align-items:center;justify-content:space-between;font:600 10px var(--fm);letter-spacing:.12em;color:var(--mut)}
+.tgl{position:relative;width:38px;height:20px;flex:none;cursor:pointer}
+.tgl input{opacity:0;position:absolute;inset:0;cursor:pointer;z-index:1}
+.tgl span{position:absolute;inset:0;background:#16202d;border:1px solid var(--line2);border-radius:20px;transition:.25s}
+.tgl span::before{content:'';position:absolute;width:12px;height:12px;left:3px;top:3px;background:var(--dim);border-radius:50%;transition:.25s}
+.tgl input:checked+span{background:rgba(61,220,151,.18);border-color:var(--green)}
+.tgl input:checked+span::before{transform:translateX(17px);background:var(--green);box-shadow:0 0 8px rgba(61,220,151,.7)}
+.set-note{font:500 9px var(--fm);color:var(--dim);letter-spacing:.08em}
+
+/* ── Журнал сделок ── */
+.th{display:grid;grid-template-columns:44px 1fr auto auto;gap:8px;align-items:center;padding:8px 2px;border-bottom:1px dashed var(--line);font:600 10.5px var(--fm);animation:fadeUp .35s ease both}
+.th:last-child{border:none}
+.th-t{color:var(--dim)}
+.th-p{color:var(--tx)}
+.th.win .th-v{color:var(--green)}
+.th.loss .th-v{color:var(--red)}
+.th-a{color:var(--cyan);text-decoration:none;opacity:.75;transition:.2s}
+.th-a:hover{opacity:1;text-decoration:underline}
+
+/* ── Возможности ── */
+.opp-head-extra{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.count-badge{font:700 10px var(--fm);color:var(--green);background:rgba(61,220,151,.1);border:1px solid rgba(61,220,151,.35);padding:3px 8px;border-radius:3px;letter-spacing:.08em}
+.hint{font:500 9px var(--fm);color:var(--dim);letter-spacing:.06em;padding:8px 16px;border-bottom:1px solid var(--line)}
+#oppList{max-height:452px;overflow-y:auto}
+.opp{display:grid;grid-template-columns:1.5fr 1.15fr .68fr .78fr .62fr .82fr auto;gap:14px;align-items:center;padding:13px 16px;border-bottom:1px solid var(--line);animation:slideIn .4s ease both;transition:background .2s}
+.opp:hover{background:rgba(63,208,255,.035)}
+.opp:last-child{border-bottom:none}
+@keyframes slideIn{from{opacity:0;transform:translateX(-12px)}to{opacity:1;transform:none}}
+.pair-name{font:700 13px var(--fd);letter-spacing:.02em}
+.route{display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap}
+.vb{font:700 9px var(--fm);letter-spacing:.06em;padding:3px 7px;border-radius:3px;border:1px solid}
+.arr{color:var(--dim);font-size:10px}
+.opp-links{margin-top:6px;display:flex;gap:12px}
+.opp-links a{font:600 9.5px var(--fm);color:var(--cyan);text-decoration:none;opacity:.7;transition:.2s}
+.opp-links a:hover{opacity:1;text-decoration:underline}
+.opp i{display:block;font:600 8.5px var(--fm);letter-spacing:.16em;color:var(--dim);font-style:normal;margin-bottom:3px}
+.opp b{font:700 12.5px var(--fm);font-variant-numeric:tabular-nums}
+.prices b{font-size:11px}
+.prices .sl{color:var(--dim)}
+.opp-spread b{font:800 17px var(--fm);color:var(--green)}
+.opp.low .opp-spread b{color:var(--dim)}
+.opp-profit b{color:var(--green)}
+.r-low{color:var(--teal)}.r-med{color:var(--amber)}.r-high{color:var(--red)}
+.tbar{height:3px;background:var(--line);border-radius:2px;overflow:hidden}
+.tbar span{display:block;height:100%;background:var(--cyan);transition:width .4s linear}
+.opp-timer em{font:600 9.5px var(--fm);color:var(--mut);font-style:normal;display:block;margin-top:4px;text-align:right}
+.opp.crit .tbar span{background:var(--red)}
+.opp.crit .opp-timer em{color:var(--red);animation:blink 1s steps(2) infinite}
+@keyframes blink{50%{opacity:.35}}
+.opp.flash-win{animation:winFlash .7s ease}
+@keyframes winFlash{0%{background:rgba(61,220,151,.3)}100%{background:transparent}}
+.opp.flash-fail{animation:failFlash .7s ease}
+@keyframes failFlash{0%{background:rgba(255,92,108,.28)}100%{background:transparent}}
+.empty{padding:46px 20px;text-align:center;color:var(--mut);font:600 10.5px var(--fm);letter-spacing:.16em}
+.radar{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--cyan);margin-right:9px;animation:pulse 1.4s infinite;vertical-align:1px}
+
+/* ── Логи ── */
+.log-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--line)}
+.fchip{font:700 9px var(--fm);letter-spacing:.1em;padding:4px 9px;border-radius:3px;border:1px solid var(--line);background:transparent;color:var(--mut);cursor:pointer;transition:.2s}
+.fchip:hover{border-color:var(--line2);color:var(--tx)}
+.fchip.on{color:#061118;background:var(--cyan);border-color:var(--cyan)}
+.fchip[data-l="TRADE"].on{background:var(--green);border-color:var(--green)}
+.fchip[data-l="WARN"].on{background:var(--amber);border-color:var(--amber)}
+.fchip[data-l="ERROR"].on{background:var(--red);border-color:var(--red)}
+.fchip[data-l="GAS"].on{background:var(--teal);border-color:var(--teal)}
+#logSearch{background:#0a111a;border:1px solid var(--line);border-radius:4px;color:var(--tx);font:600 10.5px var(--fm);padding:5px 9px;width:150px;outline:none;transition:border-color .2s}
+#logSearch:focus{border-color:var(--cyan)}
+.log-bar .sp{flex:1}
+.paused-badge{font:700 9px var(--fm);color:var(--amber);border:1px solid rgba(255,194,71,.45);padding:3px 7px;border-radius:3px;letter-spacing:.16em;display:none}
+.key-hint{font:500 8.5px var(--fm);color:var(--dim);letter-spacing:.1em}
+#logBox{height:372px;overflow-y:auto;padding:10px 12px;font:500 11.5px/1.85 var(--fm)}
+.ll{display:flex;gap:10px;align-items:baseline;animation:fadeUp .3s ease both;padding:1px 0}
+@keyframes fadeUp{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.ll .t{color:var(--dim);flex:none;font-size:10.5px}
+.ll .lv{flex:none;width:54px;text-align:center;font:700 9px/1.8 var(--fm);letter-spacing:.08em;border-radius:3px}
+.lv-INFO{color:#9db4c9;background:rgba(157,180,201,.09)}
+.lv-SCAN{color:var(--cyan);background:rgba(63,208,255,.1)}
+.lv-TRADE{color:var(--green);background:rgba(61,220,151,.13)}
+.lv-WARN{color:var(--amber);background:rgba(255,194,71,.12)}
+.lv-ERROR{color:var(--red);background:rgba(255,92,108,.14)}
+.lv-GAS{color:var(--teal);background:rgba(45,212,191,.1)}
+.ll .m{color:#c3d2e0;word-break:break-word}
+.ll .m b{color:var(--green);font-weight:700}
+
+/* ── Кнопки ── */
+.btn{font:700 10px var(--fm);letter-spacing:.12em;padding:8px 13px;border-radius:4px;border:1px solid transparent;cursor:pointer;transition:transform .18s,box-shadow .18s,background .18s,color .18s;white-space:nowrap}
+.btn:active{transform:translateY(1px) scale(.98)}
+.btn-go{background:var(--green);color:#04120b}
+.btn-go:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 5px 18px rgba(61,220,151,.35)}
+.btn-go:disabled{background:#1a2836;color:var(--dim);cursor:not-allowed;box-shadow:none}
+.btn-ghost{background:transparent;color:var(--cyan);border-color:rgba(63,208,255,.4)}
+.btn-ghost:hover{background:rgba(63,208,255,.1)}
+.btn-ghost.on{color:var(--amber);border-color:rgba(255,194,71,.55);background:rgba(255,194,71,.07)}
+.btn-sm{padding:5px 9px;font-size:9px}
+
+/* ── Тосты ── */
+#toasts{position:fixed;top:72px;right:16px;z-index:100;display:flex;flex-direction:column;gap:10px;width:292px;max-width:calc(100vw - 32px)}
+.toast{background:linear-gradient(180deg,#101a26,#0c141d);border:1px solid var(--line2);border-left:3px solid var(--cyan);border-radius:6px;padding:11px 13px;box-shadow:0 12px 34px rgba(0,0,0,.55);animation:toastIn .32s cubic-bezier(.2,.9,.3,1.15) both}
+.toast.ok{border-left-color:var(--green)}
+.toast.err{border-left-color:var(--red)}
+.toast.warn{border-left-color:var(--amber)}
+.toast h4{font:700 11px var(--fm);letter-spacing:.12em;margin-bottom:3px}
+.toast.ok h4{color:var(--green)}.toast.err h4{color:var(--red)}.toast.warn h4{color:var(--amber)}
+.toast p{font:500 10.5px var(--fm);color:var(--mut)}
+.toast.out{animation:toastOut .3s ease both}
+@keyframes toastIn{from{opacity:0;transform:translateX(34px)}to{opacity:1;transform:none}}
+@keyframes toastOut{to{opacity:0;transform:translateX(34px)}}
+
+/* ── Подвал ── */
+footer{position:relative;z-index:2;border-top:1px solid var(--line);margin-top:6px;padding:18px 22px;display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:center}
+.flinks{display:flex;gap:16px;flex-wrap:wrap}
+.flinks a{font:600 10px var(--fm);letter-spacing:.1em;color:var(--mut);text-decoration:none;transition:.2s}
+.flinks a:hover{color:var(--cyan);text-decoration:underline}
+.fnote{font:500 9.5px/1.6 var(--fm);color:var(--dim);max-width:560px}
+
+@media(max-width:1180px){
+  .wrap{grid-template-columns:1fr}
+  .rail{display:grid;grid-template-columns:1fr 1fr;align-items:start}
+  .rail>.panel:first-child,.tiles{grid-column:1/-1}
+}
+@media(max-width:960px){
+  .opp{grid-template-columns:1fr 1fr;gap:10px}
+  .opp-act{grid-column:1/-1;display:flex;justify-content:flex-end}
+}
+@media(max-width:640px){
+  .rail{grid-template-columns:1fr}
+  .brand h1{font-size:15px}
+  .bal-v{font-size:27px}
+  .top{padding:12px 14px}
+  .wrap{padding:12px}
+  #logBox{height:300px}
+}
+</style>
+</head>
+<body>
+<div class="scan"></div>
+
+<header class="top">
+  <div class="brand">
+    <svg viewBox="0 0 40 40" fill="none">
+      <path d="M20 3 34 11v18L20 37 6 29V11L20 3Z" stroke="#3fd0ff" stroke-width="2"/>
+      <path d="M12 24l5-8.5 3.5 5.5 3-4.5 4.5 7.5" stroke="#3ddc97" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="27.5" cy="13.5" r="1.8" fill="#3ddc97"/>
+    </svg>
+    <div>
+      <h1>MEXC <em>⇄</em> DEX</h1>
+      <small>ARBITRAGE CORE · v2.4.1 · CEX↔DEX HFT</small>
+    </div>
+  </div>
+  <div class="chips">
+    <span class="chip"><i class="dot live"></i>БОТ АКТИВЕН</span>
+    <span class="chip">UPTIME <b id="uptime">3д 14:27:11</b></span>
+    <span class="chip">PING MEXC <b id="ping">18 мс</b></span>
+    <span class="chip">GAS BSC <b id="gas">14.0 gwei</b></span>
+    <span class="chip">СЕТЬ <b>BSC · ETH</b></span>
+    <span class="chip">API <b class="ok">OK</b></span>
+  </div>
+</header>
+
+<div class="tape"><div class="tape-track" id="tapeTrack"></div></div>
+
+<main class="wrap">
+  <!-- ЛЕВАЯ КОЛОНКА -->
+  <aside class="rail">
+    <section class="panel">
+      <div class="ph"><span class="t"><i></i>БАЛАНС КОШЕЛЬКА</span><span class="chip" style="padding:3px 8px"><i class="dot cy"></i>LIVE</span></div>
+      <div class="pb">
+        <div class="bal-l">ИТОГО · USDT</div>
+        <div class="bal-v"><span id="balV">12 480,55</span> <small>₮</small></div>
+        <div class="pnl up" id="pnlV">+0,00 ₮ за сессию</div>
+        <canvas id="spark"></canvas>
+        <div class="split">
+          <div class="split-bar"><i id="segCex" style="background:#5aa2ff;width:62%"></i><i id="segDex" style="background:#3ddc97;width:38%"></i></div>
+          <div class="split-leg"><span>MEXC CEX · <b id="legCex">7 737,94 ₮</b></span><span>DEX WALLET · <b id="legDex">4 742,61 ₮</b></span></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="tiles">
+      <div class="tile"><i>СДЕЛКИ / СЕССИЯ</i><b id="tTrades">0</b><u>исполнено ботом</u></div>
+      <div class="tile"><i>УСПЕШНОСТЬ</i><b id="tWin">—</b><div class="wbar"><span id="tWinBar"></span></div></div>
+      <div class="tile"><i>СР. СПРЕД</i><b id="tSpread">—</b><u>по найденным</u></div>
+      <div class="tile"><i>ОБОРОТ</i><b id="tVol">0 ₮</b><u>объём за сессию</u></div>
+    </div>
+
+    <section class="panel">
+      <div class="ph"><span class="t"><i></i>ПАРАМЕТРЫ БОТА</span><span class="set-note">применяются мгновенно</span></div>
+      <div class="pb set">
+        <div class="srow"><label>МИН. СПРЕД <output id="vSpread">0.6%</output></label><input type="range" id="setSpread" min="0.2" max="3" step="0.1" value="0.6"></div>
+        <div class="srow"><label>МАКС. ПРОСКАЛЬЗЫВАНИЕ <output id="vSlip">0.5%</output></label><input type="range" id="setSlip" min="0.1" max="2" step="0.1" value="0.5"></div>
+        <div class="srow"><label>ЛИМИТ GAS <output id="vGas">40 gwei</output></label><input type="range" id="setGas" min="10" max="100" step="5" value="40"></div>
+        <div class="srow"><label style="margin-bottom:6px">ОБЪЁМ СДЕЛКИ · USDT</label><input type="number" id="setVol" min="100" max="50000" step="100" value="2500"></div>
+        <div class="tgl-row"><span>АВТО-ТОРГОВЛЯ</span><label class="tgl"><input type="checkbox" id="tglAuto" checked><span></span></label></div>
+        <div class="tgl-row"><span>ЗВУК СДЕЛОК</span><label class="tgl"><input type="checkbox" id="tglSound"><span></span></label></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="ph"><span class="t"><i></i>ПОСЛЕДНИЕ СДЕЛКИ</span><a class="th-a" href="https://bscscan.com" target="_blank" rel="noopener" style="font:600 9px var(--fm)">explorer ↗</a></div>
+      <div class="pb" id="tradeList" style="padding-top:6px"></div>
+    </section>
+  </aside>
+
+  <!-- ПРАВАЯ КОЛОНКА -->
+  <section class="col">
+    <section class="panel">
+      <div class="ph">
+        <span class="t"><i></i>НАЙДЕННЫЕ ВОЗМОЖНОСТИ</span>
+        <div class="opp-head-extra">
+          <span class="count-badge" id="oppCount">0 АКТ.</span>
+          <button class="btn btn-ghost btn-sm" id="btnScan">⏸ ПАУЗА СКАНА</button>
+        </div>
+      </div>
+      <div class="hint" id="volHint">*профит рассчитан для объёма 2 500 ₮ с учётом комиссий биржи, DEX и газа</div>
+      <div id="oppList">
+        <div class="empty" id="oppEmpty"><span class="radar"></span>СКАНИРОВАНИЕ РЫНКОВ · ОЖИДАНИЕ СПРЕДА</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="ph">
+        <span class="t"><i></i>ЖУРНАЛ БОТА</span>
+        <span class="paused-badge" id="pausedBadge">⏸ ПАУЗА</span>
+        <span class="key-hint">SPACE — пауза/продолжить</span>
+      </div>
+      <div class="log-bar">
+        <button class="fchip on" data-l="ALL">ВСЕ</button>
+        <button class="fchip" data-l="SCAN">SCAN</button>
+        <button class="fchip" data-l="INFO">INFO</button>
+        <button class="fchip" data-l="TRADE">TRADE</button>
+        <button class="fchip" data-l="WARN">WARN</button>
+        <button class="fchip" data-l="ERROR">ERROR</button>
+        <button class="fchip" data-l="GAS">GAS</button>
+        <input type="text" id="logSearch" placeholder="поиск по логу…">
+        <span class="sp"></span>
+        <button class="btn btn-ghost btn-sm on" id="btnScroll">АВТО-СКРОЛЛ</button>
+        <button class="btn btn-ghost btn-sm" id="btnPause">⏸ ПАУЗА</button>
+        <button class="btn btn-ghost btn-sm" id="btnCopy">КОПИРОВАТЬ</button>
+        <button class="btn btn-ghost btn-sm" id="btnClear">ОЧИСТИТЬ</button>
+      </div>
+      <div id="logBox"></div>
+    </section>
+  </section>
+</main>
+
+<footer>
+  <div class="flinks">
+    <a href="https://www.mexc.com" target="_blank" rel="noopener">MEXC ↗</a>
+    <a href="https://mexcdevelop.github.io/apidocs/" target="_blank" rel="noopener">MEXC API DOCS ↗</a>
+    <a href="https://pancakeswap.finance" target="_blank" rel="noopener">PANCAKESWAP ↗</a>
+    <a href="https://app.uniswap.org" target="_blank" rel="noopener">UNISWAP ↗</a>
+    <a href="https://app.1inch.io" target="_blank" rel="noopener">1INCH ↗</a>
+    <a href="https://bscscan.com" target="_blank" rel="noopener">BSCSCAN ↗</a>
+    <a href="https://etherscan.io" target="_blank" rel="noopener">ETHERSCAN ↗</a>
+    <a href="https://t.me/mexc_official" target="_blank" rel="noopener">TELEGRAM ↗</a>
+    <a href="https://github.com/mexcdevelop" target="_blank" rel="noopener">GITHUB ↗</a>
+  </div>
+  <p class="fnote">Демо-интерфейс центра мониторинга арбитражного бота. Не является инвестиционной рекомендацией: арбитраж криптовалют сопряжён с высоким риском потери средств.</p>
+  <span class="chip">BUILD 8f3a2c · 26.07.2026</span>
+</footer>
+
+<div id="toasts"></div>
+
+<script>
+/* ═════════ Утилиты ═════════ */
+const $=id=>document.getElementById(id);
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const ri=(a,b)=>Math.floor(rnd(a,b+1));
+const pick=a=>a[Math.floor(Math.random()*a.length)];
+const hexC=()=>'0123456789abcdef'[ri(0,15)];
+const fmtN=(n,d=2)=>n.toLocaleString('ru-RU',{minimumFractionDigits:d,maximumFractionDigits:d});
+const nowT=()=>{const d=new Date();return d.toTimeString().slice(0,8)+'.'+String(d.getMilliseconds()).padStart(3,'0')};
+
+/* ═════════ Данные ═════════ */
+const PAIRS=[
+  {s:'MEXC/USDT',p:0.04126,d:5},{s:'ETH/USDT',p:3418.4,d:2},{s:'BTC/USDT',p:97642,d:1},
+  {s:'SOL/USDT',p:213.62,d:2},{s:'BNB/USDT',p:643.8,d:2},{s:'TON/USDT',p:5.842,d:3},
+  {s:'DOGE/USDT',p:0.31824,d:5},{s:'PEPE/USDT',p:0.00001142,d:10}
+];
+const MEXC_V={n:'MEXC',sh:'MEXC',u:'https://www.mexc.com',c:'#5aa2ff',ch:'CEX'};
+const DEXES=[
+  {n:'PancakeSwap',sh:'PCS',u:'https://pancakeswap.finance',c:'#ffc247',ch:'BSC'},
+  {n:'Uniswap V3',sh:'UNI',u:'https://app.uniswap.org',c:'#ff8fab',ch:'ETH'},
+  {n:'1inch',sh:'1INCH',u:'https://app.1inch.io',c:'#2dd4bf',ch:'BSC'},
+  {n:'MEXC Swap',sh:'MSWAP',u:'https://www.mexc.com',c:'#3fd0ff',ch:'BSC'}
+];
+const S={
+  balance:12480.55,pnl:0,trades:0,wins:0,vol:0,spreadSum:0,spreadCnt:0,
+  minSpread:0.6,slip:0.5,maxGas:40,volume:2500,auto:true,sound:false,
+  scanOn:true,logsPaused:false,autoScroll:true,filter:'ALL',q:'',
+  cex:0.62,gas:14,gasEth:22,ping:18,opps:[],oid:0,logs:[]
+};
+const spark=[];{let sv=S.balance-420;for(let i=0;i<56;i++){sv+=rnd(-13,21);spark.push(sv)}spark[spark.length-1]=S.balance}
+let lastBal=S.balance;
+
+/* ═════════ Логи ═════════ */
+function addLog(lv,html){
+  const box=$('logBox');
+  const row=document.createElement('div');
+  row.className='ll';row.dataset.lv=lv;
+  row.innerHTML=`<span class="t">${nowT()}</span><span class="lv lv-${lv}">${lv}</span><span class="m">${html}</span>`;
+  box.appendChild(row);
+  S.logs.push({t:nowT(),lv,raw:html.replace(/<[^>]+>/g,'')});
+  while(box.children.length>350){box.firstChild.remove();S.logs.shift()}
+  const ok=(S.filter==='ALL'||lv===S.filter)&&(!S.q||row.textContent.toLowerCase().includes(S.q));
+  row.style.display=ok?'':'none';
+  if(S.autoScroll)box.scrollTop=box.scrollHeight;
+}
+function scanMsg(){
+  const p=pick(PAIRS),d=pick(DEXES),sp=rnd(0.15,2.4),ok=sp>=S.minSpread;
+  return `${p.s}: MEXC ${fmtN(p.p*rnd(.9992,1.0008),p.d)} ⇄ ${d.n} ${fmtN(p.p*rnd(.9992,1.0008),p.d)} | спред <b>${sp.toFixed(2)}%</b> ${ok?'▶ в работе':'· ниже порога'}`;
+}
+const GEN=[
+  ()=>['SCAN',scanMsg()],
+  ()=>['INFO',`WebSocket MEXC: ${ri(40,420)} обновлений стакана за ${ri(4,38)} мс`],
+  ()=>['INFO',`Heartbeat | ping MEXC ${S.ping} мс | RPC BSC ${ri(18,90)} мс`],
+  ()=>['GAS',`Gas | BSC ${S.gas.toFixed(1)} gwei · ETH ${S.gasEth.toFixed(1)} gwei`],
+  ()=>['INFO',`Синхронизация nonce | MEXC seq=${ri(80000,99999)} · OK`],
+  ()=>['INFO',`Сверка балансов | MEXC ${fmtN(S.balance*S.cex)} ₮ · DEX ${fmtN(S.balance*(1-S.cex))} ₮`],
+  ()=>['WARN',`Проскальзывание ${pick(PAIRS).s} ${rnd(.3,1.4).toFixed(2)}% — наблюдение`],
+  ()=>['WARN',`Rate-limit MEXC API: ${ri(600,1150)}/1200 req/min`],
+  ()=>['ERROR',`RPC timeout (BSC) — повтор через ${ri(1,4)}с`],
+  ()=>['INFO',`Подписка на пулы ${pick(DEXES).n}: ${ri(3,18)} активных пар`],
+  ()=>['SCAN',`${pick(PAIRS).s}: глубина стакана MEXC ${fmtN(rnd(40,900),0)}k ₮ · спред биржи ${rnd(.01,.09).toFixed(2)}%`]
+];
+const WGT=[22,14,12,10,8,8,9,6,4,8,10];
+function wPick(){const tot=WGT.reduce((a,b)=>a+b,0);let r=Math.random()*tot;for(let i=0;i<GEN.length;i++){r-=WGT[i];if(r<=0)return GEN[i]()}}
+(function logLoop(){setTimeout(()=>{if(!S.logsPaused){const[lv,m]=wPick();addLog(lv,m)}logLoop()},ri(900,2600))})();
+
+/* ═════════ Возможности ═════════ */
+function spawnOpp(){
+  const pair=pick(PAIRS),dex=pick(DEXES);
+  const spread=+(rnd(0.22,0.75)+(Math.random()<0.32?rnd(0.25,1.75):0)).toFixed(2);
+  const cexBuy=Math.random()<0.55;
+  const buyV=cexBuy?MEXC_V:dex, sellV=cexBuy?dex:MEXC_V;
+  const buyP=pair.p*(1-spread/200), sellP=pair.p*(1+spread/200);
+  const profit=S.volume*spread/100*rnd(0.55,0.82);
+  const risk=spread<0.7?'low':spread<1.4?'med':'high';
+  const life=ri(18,45)*1000;
+  const o={id:++S.oid,pair,buyV,sellV,buyP,sellP,spread,profit,risk,life,exp:Date.now()+life,busy:false};
+  S.opps.push(o);S.spreadSum+=spread;S.spreadCnt++;
+  const low=spread<S.minSpread;
+  const rl={low:'НИЗКИЙ',med:'СРЕДНИЙ',high:'ВЫСОКИЙ'}[risk];
+  const el=document.createElement('div');
+  el.className='opp'+(low?' low':'');el.id='opp-'+o.id;
+  el.innerHTML=`
+    <div class="opp-main">
+      <div class="pair-name">${pair.s}</div>
+      <div class="route">
+        <span class="vb" style="color:${buyV.c};border-color:${buyV.c}55;background:${buyV.c}14">${buyV.n}</span>
+        <span class="arr">➜</span>
+        <span class="vb" style="color:${sellV.c};border-color:${sellV.c}55;background:${sellV.c}14">${sellV.n}</span>
+      </div>
+      <div class="opp-links">
+        <a href="${buyV.u}" target="_blank" rel="noopener">${buyV.sh} ↗</a>
+        <a href="${sellV.u}" target="_blank" rel="noopener">${sellV.sh} ↗</a>
+      </div>
+    </div>
+    <div class="opp-cell prices"><i>ПОКУПКА → ПРОДАЖА</i><b>${fmtN(buyP,pair.d)} <span class="sl">➜</span> ${fmtN(sellP,pair.d)}</b></div>
+    <div class="opp-cell opp-spread"><i>СПРЕД</i><b>+${spread.toFixed(2)}%</b></div>
+    <div class="opp-cell opp-profit"><i>ПРОФИТ*</i><b>+${fmtN(profit)} ₮</b></div>
+    <div class="opp-cell"><i>РИСК</i><b class="r-${risk}">${rl}</b></div>
+    <div class="opp-cell opp-timer"><div class="tbar"><span style="width:100%"></span></div><em>${Math.round(life/1000)}с</em></div>
+    <div class="opp-act"><button class="btn btn-go exec" ${low?'disabled title="Спред ниже порога"':''}>${low?'НИЗКИЙ СПРЕД':'ИСПОЛНИТЬ'}</button></div>`;
+  el.querySelector('.exec').addEventListener('click',()=>execute(o.id,false));
+  $('oppEmpty').style.display='none';
+  $('oppList').prepend(el);
+  updateStats();
+  addLog('SCAN',`Найдена возможность: ${pair.s} · спред <b>${spread.toFixed(2)}%</b> · ${buyV.n} → ${sellV.n} · профит ~${fmtN(profit)} ₮`);
+  if(S.auto&&!low)setTimeout(()=>{if(S.auto&&S.opps.includes(o)&&!o.busy)execute(o.id,true)},ri(1000,2800));
+}
+(function oppLoop(){setTimeout(()=>{if(S.scanOn&&S.opps.length<6)spawnOpp();oppLoop()},ri(2200,4600))})();
+
+setInterval(()=>{
+  const now=Date.now();
+  for(const o of [...S.opps]){
+    const el=$('opp-'+o.id);if(!el)continue;
+    const rem=o.exp-now;
+    el.querySelector('.tbar span').style.width=Math.max(0,rem/o.life*100)+'%';
+    el.querySelector('.opp-timer em').textContent=Math.max(0,Math.ceil(rem/1000))+'с';
+    el.classList.toggle('crit',rem<8000);
+    if(rem<=0)expireOpp(o);
+  }
+},400);
+
+function dropRow(o){
+  S.opps=S.opps.filter(x=>x!==o);
+  const el=$('opp-'+o.id);
+  if(el){el.style.transition='opacity .3s,transform .3s';el.style.opacity='0';el.style.transform='translateX(14px)';
+    setTimeout(()=>{el.remove();if(!S.opps.length)$('oppEmpty').style.display='block'},300)}
+  updateStats();
+}
+function expireOpp(o){dropRow(o);addLog('WARN',`Возможность истекла | ${o.pair.s} · спред ${o.spread.toFixed(2)}% не исполнен`)}
+
+function execute(id,auto){
+  const o=S.opps.find(x=>x.id===id);if(!o||o.busy)return;o.busy=true;
+  const el=$('opp-'+id),btn=el.querySelector('.exec');
+  btn.disabled=true;btn.textContent='ИСПОЛНЕНИЕ…';
+  addLog('INFO',`Ордер отправлен | ${o.pair.s} · объём ${fmtN(S.volume,0)} ₮ · маршрут ${o.buyV.n} → ${o.sellV.n}${auto?' · <b>AUTO</b>':''}`);
+  setTimeout(()=>{
+    const gasFail=S.gas>S.maxGas&&Math.random()<0.6;
+    const baseP=o.risk==='low'?0.9:o.risk==='med'?0.78:0.62;
+    const ok=!gasFail&&Math.random()<baseP;
+    if(ok){
+      const pnl=+(o.profit*rnd(0.72,1.12)).toFixed(2);
+      S.balance+=pnl;S.pnl+=pnl;S.trades++;S.wins++;S.vol+=S.volume;
+      S.cex=Math.min(0.8,Math.max(0.35,S.cex+rnd(-0.05,0.05)));
+      const h='0x'+Array.from({length:16},hexC).join('')+'…';
+      addLog('TRADE',`${o.pair.s}: куплено @ ${fmtN(o.buyP,o.pair.d)} (${o.buyV.n}) → продано @ ${fmtN(o.sellP,o.pair.d)} (${o.sellV.n}) | <b>+${fmtN(pnl)} USDT</b> | tx ${h}`);
+      toast('ok','СДЕЛКА ИСПОЛНЕНА',`+${fmtN(pnl)} USDT · ${o.pair.s} · ${o.sellV.n}`);
+      pushTrade(o,pnl,true);
+      spark.push(S.balance);spark.shift();drawSpark();
+      el.classList.add('flash-win');beep(880);setTimeout(()=>beep(1320),130);
+    }else{
+      const fee=+rnd(1.5,7.5).toFixed(2);S.balance-=fee;S.pnl-=fee;S.trades++;
+      const reason=gasFail?`gas ${S.gas.toFixed(0)} gwei > лимит ${S.maxGas} gwei`:pick([
+        `проскальзывание ${rnd(S.slip,S.slip+1.2).toFixed(2)}% > лимита ${S.slip.toFixed(1)}%`,
+        `недостаточная ликвидность в пуле ${o.sellV.n}`,
+        `nonce conflict — транзакция отменена`,
+        `частичное исполнение · остаток возвращён`]);
+      addLog('ERROR',`Сделка отклонена | ${o.pair.s} | ${reason} | комиссия −${fmtN(fee)} USDT`);
+      toast('err','СДЕЛКА ОТКЛОНЕНА',`${reason} · −${fmtN(fee)} USDT`);
+      pushTrade(o,-fee,false);
+      spark.push(S.balance);spark.shift();drawSpark();
+      el.classList.add('flash-fail');beep(220);
+    }
+    updateStats();
+    setTimeout(()=>dropRow(o),650);
+  },ri(550,1100));
+}
+
+function pushTrade(o,pnl,ok){
+  const hash='0x'+Array.from({length:64},hexC).join('');
+  const ex=o.sellV.ch==='ETH'?'https://etherscan.io/tx/':'https://bscscan.com/tx/';
+  const el=document.createElement('div');
+  el.className='th '+(ok?'win':'loss');
+  el.innerHTML=`<span class="th-t">${new Date().toTimeString().slice(0,5)}</span><span class="th-p">${o.pair.s}</span><span class="th-v">${ok?'+':'−'}${fmtN(Math.abs(pnl))} ₮</span><a class="th-a" href="${ex}${hash}" target="_blank" rel="noopener">tx ↗</a>`;
+  const box=$('tradeList');box.prepend(el);
+  while(box.children.length>7)box.lastChild.remove();
+}
+
+/* ═════════ Статистика ═════════ */
+function animateNum(el,from,to,dec){
+  if(Math.abs(to-from)<0.001){el.textContent=fmtN(to,dec);return}
+  const t0=performance.now(),dur=450;
+  (function f(t){const k=Math.min(1,(t-t0)/dur);el.textContent=fmtN(from+(to-from)*(1-Math.pow(1-k,3)),dec);if(k<1)requestAnimationFrame(f)})(t0);
+}
+function updateStats(){
+  animateNum($('balV'),lastBal,S.balance,2);lastBal=S.balance;
+  const base=S.balance-S.pnl,pct=base?S.pnl/base*100:0;
+  const pe=$('pnlV');
+  pe.textContent=`${S.pnl>=0?'+':'−'}${fmtN(Math.abs(S.pnl))} ₮ (${S.pnl>=0?'+':'−'}${Math.abs(pct).toFixed(2)}%) за сессию`;
+  pe.className='pnl '+(S.pnl>=0?'up':'dn');
+  $('tTrades').textContent=S.trades;
+  const wr=S.trades?Math.round(S.wins/S.trades*100):0;
+  $('tWin').textContent=S.trades?wr+'%':'—';
+  $('tWinBar').style.width=wr+'%';
+  $('tSpread').textContent=S.spreadCnt?(S.spreadSum/S.spreadCnt).toFixed(2)+'%':'—';
+  $('tVol').textContent=fmtN(S.vol,0)+' ₮';
+  $('oppCount').textContent=S.opps.length+' АКТ.';
+  $('segCex').style.width=(S.cex*100)+'%';$('segDex').style.width=((1-S.cex)*100)+'%';
+  $('legCex').textContent=fmtN(S.balance*S.cex)+' ₮';
+  $('legDex').textContent=fmtN(S.balance*(1-S.cex)+'')+' ₮';
+}
+
+/* ═════════ Спарклайн ═════════ */
+function drawSpark(){
+  const c=$('spark'),dpr=window.devicePixelRatio||1,w=c.clientWidth||280,h=64;
+  c.width=w*dpr;c.height=h*dpr;
+  const g=c.getContext('2d');g.scale(dpr,dpr);g.clearRect(0,0,w,h);
+  const mn=Math.min(...spark),mx=Math.max(...spark),rg=(mx-mn)||1;
+  const X=i=>i/(spark.length-1)*(w-6)+3, Y=v=>h-6-((v-mn)/rg)*(h-14);
+  g.beginPath();g.moveTo(X(0),Y(spark[0]));spark.forEach((v,i)=>g.lineTo(X(i),Y(v)));
+  g.lineTo(X(spark.length-1),h);g.lineTo(X(0),h);g.closePath();
+  const gr=g.createLinearGradient(0,0,0,h);gr.addColorStop(0,'rgba(61,220,151,.28)');gr.addColorStop(1,'rgba(61,220,151,0)');
+  g.fillStyle=gr;g.fill();
+  g.beginPath();spark.forEach((v,i)=>i?g.lineTo(X(i),Y(v)):g.moveTo(X(i),Y(v)));
+  g.strokeStyle='#3ddc97';g.lineWidth=1.6;g.lineJoin='round';g.stroke();
+  const lx=X(spark.length-1),ly=Y(spark[spark.length-1]);
+  g.beginPath();g.arc(lx,ly,2.6,0,7);g.fillStyle='#3ddc97';g.fill();
+  g.beginPath();g.arc(lx,ly,6,0,7);g.fillStyle='rgba(61,220,151,.22)';g.fill();
+}
+window.addEventListener('resize',drawSpark);
+
+/* ═════════ Бегущая строка ═════════ */
+const TAPE=[
+  {s:'BTC/USDT',p:97642,d:1},{s:'ETH/USDT',p:3418,d:2},{s:'MEXC/USDT',p:0.04126,d:5},
+  {s:'SOL/USDT',p:213.6,d:2},{s:'BNB/USDT',p:643.8,d:2},{s:'TON/USDT',p:5.842,d:3},
+  {s:'DOGE/USDT',p:0.3182,d:5},{s:'PEPE/USDT',p:0.00001142,d:10},
+  {s:'BSC GAS',p:14,d:1},{s:'MEXC API UPTIME',p:99.98,d:2,api:true}
+];
+TAPE.forEach(t=>t.c=rnd(-1.5,1.5));
+function tapeGroup(){
+  const f=document.createDocumentFragment();
+  TAPE.forEach(t=>{const s=document.createElement('span');s.className='ti';
+    s.innerHTML=`<span class="s">${t.s}</span><span class="p" data-sym="${t.s}"></span><span class="c" data-cym="${t.s}"></span>`;
+    f.appendChild(s)});
+  return f;
+}
+$('tapeTrack').append(tapeGroup(),tapeGroup());
+function updTape(){
+  TAPE.forEach(t=>{if(!t.api){t.p*=1+rnd(-0.0016,0.0016);t.c+=rnd(-0.08,0.08)}
+    document.querySelectorAll(`[data-sym="${t.s}"]`).forEach(e=>e.textContent=t.api?t.p.toFixed(t.d)+'%':fmtN(t.p,t.d));
+    document.querySelectorAll(`[data-cym="${t.s}"]`).forEach(e=>{e.textContent=(t.c>=0?'▲ ':'▼ ')+Math.abs(t.c).toFixed(2)+'%';e.className='c '+(t.c>=0?'up':'dn')})});
+}
+setInterval(updTape,1600);updTape();
+
+/* ═════════ Шапка: uptime / ping / gas ═════════ */
+let upS=3*86400+14*3600+27*60+11;
+setInterval(()=>{upS++;
+  const d=Math.floor(upS/86400),h=String(Math.floor(upS%86400/3600)).padStart(2,'0'),
+        m=String(Math.floor(upS%3600/60)).padStart(2,'0'),s=String(upS%60).padStart(2,'0');
+  $('uptime').textContent=`${d}д ${h}:${m}:${s}`},1000);
+setInterval(()=>{S.ping=ri(9,38);$('ping').textContent=S.ping+' мс'},2600);
+setInterval(()=>{
+  S.gas=Math.max(6,Math.min(60,S.gas+rnd(-2.2,2.2)));
+  S.gasEth=Math.max(10,Math.min(80,S.gasEth+rnd(-3,3)));
+  $('gas').textContent=S.gas.toFixed(1)+' gwei';
+  TAPE.find(t=>t.s==='BSC GAS').p=S.gas;
+},4200);
+
+/* ═════════ Настройки ═════════ */
+function refreshThreshold(){
+  for(const o of S.opps){
+    const el=$('opp-'+o.id);if(!el||o.busy)continue;
+    const low=o.spread<S.minSpread;
+    el.classList.toggle('low',low);
+    const b=el.querySelector('.exec');b.disabled=low;
+    b.textContent=low?'НИЗКИЙ СПРЕД':'ИСПОЛНИТЬ';
+  }
+}
+$('setSpread').addEventListener('input',e=>{S.minSpread=+e.target.value;$('vSpread').textContent=S.minSpread.toFixed(1)+'%';refreshThreshold()});
+$('setSpread').addEventListener('change',()=>addLog('INFO',`Настройки: мин. спред → ${S.minSpread.toFixed(1)}%`));
+$('setSlip').addEventListener('input',e=>{S.slip=+e.target.value;$('vSlip').textContent=S.slip.toFixed(1)+'%'});
+$('setSlip').addEventListener('change',()=>addLog('INFO',`Настройки: макс. проскальзывание → ${S.slip.toFixed(1)}%`));
+$('setGas').addEventListener('input',e=>{S.maxGas=+e.target.value;$('vGas').textContent=S.maxGas+' gwei'});
+$('setGas').addEventListener('change',()=>addLog('INFO',`Настройки: лимит gas → ${S.maxGas} gwei`));
+$('setVol').addEventListener('input',e=>{
+  S.volume=Math.max(100,+e.target.value||2500);
+  $('volHint').textContent=`*профит рассчитан для объёма ${fmtN(S.volume,0)} ₮ с учётом комиссий биржи, DEX и газа`;
+});
+$('tglAuto').addEventListener('change',e=>{
+  S.auto=e.target.checked;
+  addLog(S.auto?'INFO':'WARN',`Авто-торговля ${S.auto?'включена':'выключена'}`);
+  toast(S.auto?'ok':'warn','АВТО-ТОРГОВЛЯ',S.auto?'Бот исполняет возможности сам':'Только ручной режим');
+});
+$('tglSound').addEventListener('change',e=>{S.sound=e.target.checked;if(S.sound){ensureAC();beep(660)}});
+
+/* ═════════ Панель логов ═════════ */
+function applyFilters(){
+  for(const r of $('logBox').children){
+    const ok=(S.filter==='ALL'||r.dataset.lv===S.filter)&&(!S.q||r.textContent.toLowerCase().includes(S.q));
+    r.style.display=ok?'':'none';
+  }
+}
+document.querySelectorAll('.fchip').forEach(ch=>ch.addEventListener('click',()=>{
+  document.querySelectorAll('.fchip').forEach(c=>c.classList.remove('on'));
+  ch.classList.add('on');S.filter=ch.dataset.l;applyFilters();
+}));
+$('logSearch').addEventListener('input',e=>{S.q=e.target.value.trim().toLowerCase();applyFilters()});
+$('btnPause').addEventListener('click',()=>{
+  S.logsPaused=!S.logsPaused;
+  $('btnPause').textContent=S.logsPaused?'▶ ДАЛЕЕ':'⏸ ПАУЗА';
+  $('btnPause').classList.toggle('on',S.logsPaused);
+  $('pausedBadge').style.display=S.logsPaused?'inline-block':'none';
+});
+$('btnScroll').addEventListener('click',()=>{
+  S.autoScroll=!S.autoScroll;
+  $('btnScroll').classList.toggle('on',S.autoScroll);
+  if(S.autoScroll)$('logBox').scrollTop=$('logBox').scrollHeight;
+});
+$('btnClear').addEventListener('click',()=>{$('logBox').innerHTML='';S.logs=[];addLog('INFO','Журнал очищен оператором')});
+$('btnCopy').addEventListener('click',()=>{
+  const txt=S.logs.map(l=>`${l.t} [${l.lv}] ${l.raw}`).join('\n');
+  navigator.clipboard.writeText(txt)
+    .then(()=>toast('ok','ЛОГ СКОПИРОВАН',S.logs.length+' строк в буфере обмена'))
+    .catch(()=>toast('warn','ОШИБКА','Не удалось скопировать'));
+});
+$('btnScan').addEventListener('click',()=>{
+  S.scanOn=!S.scanOn;
+  $('btnScan').textContent=S.scanOn?'⏸ ПАУЗА СКАНА':'▶ ВОЗОБНОВИТЬ';
+  $('btnScan').classList.toggle('on',!S.scanOn);
+  addLog(S.scanOn?'INFO':'WARN',`Сканер рынков ${S.scanOn?'возобновлён':'приостановлен'}`);
+});
+window.addEventListener('keydown',e=>{
+  if(e.code==='Space'&&!/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)){e.preventDefault();$('btnPause').click()}
+});
+
+/* ═════════ Тосты и звук ═════════ */
+function toast(type,title,msg){
+  const t=document.createElement('div');t.className='toast '+type;
+  t.innerHTML=`<h4>${title}</h4><p>${msg}</p>`;
+  $('toasts').appendChild(t);
+  setTimeout(()=>{t.classList.add('out');setTimeout(()=>t.remove(),320)},3800);
+}
+let AC=null;
+function ensureAC(){if(!AC){try{AC=new (window.AudioContext||window.webkitAudioContext)()}catch(e){}}}
+function beep(f){
+  if(!S.sound)return;ensureAC();if(!AC)return;
+  const o=AC.createOscillator(),g=AC.createGain();
+  o.frequency.value=f;o.type='sine';
+  g.gain.setValueAtTime(0.0001,AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.12,AC.currentTime+0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001,AC.currentTime+0.16);
+  o.connect(g).connect(AC.destination);o.start();o.stop(AC.currentTime+0.18);
+}
+
+/* ═════════ Старт ═════════ */
+addLog('INFO','Арбитражный бот MEXC-DEX v2.4.1 запущен · ядро инициализировано');
+addLog('INFO','Подключение к MEXC WebSocket… OK (wss://wbs.mexc.com)');
+addLog('INFO','RPC-провайдеры: BSC → OK · ETH → OK · резервный канал активен');
+addLog('GAS',`Gas | BSC ${S.gas.toFixed(1)} gwei · ETH ${S.gasEth.toFixed(1)} gwei`);
+addLog('SCAN','Сканирование 214 пар на MEXC × 4 DEX-площадках…');
+pushTrade({pair:PAIRS[1],sellV:DEXES[0]},14.2,true);
+pushTrade({pair:PAIRS[0],sellV:DEXES[2]},8.7,true);
+pushTrade({pair:PAIRS[3],sellV:DEXES[1]},-3.1,false);
+updateStats();
+drawSpark();
+setTimeout(spawnOpp,700);
+setTimeout(spawnOpp,1900);
+</script>
+</body>
+</html>

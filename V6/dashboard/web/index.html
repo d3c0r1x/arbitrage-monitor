@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MEXC ⇄ DEX · Монитор</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%2306090e'/><path d='M7 21l5-9 3.5 5.5 3-4.5 6.5 8' stroke='%233ddc97' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+<link href="https://cdn.jsdelivr.net/fontsource/css/unbounded@latest/index.css" rel="stylesheet" media="print" onload="this.media='all'">
+<link href="https://cdn.jsdelivr.net/fontsource/css/manrope@latest/index.css" rel="stylesheet" media="print" onload="this.media='all'">
+<link href="https://cdn.jsdelivr.net/fontsource/css/jetbrains-mono@latest/index.css" rel="stylesheet" media="print" onload="this.media='all'">
+<style>
+:root{
+  --bg:#06090e;--p1:#0d141d;--p2:#0a1017;--line:#1b2735;--line2:#2a3c52;
+  --tx:#e6eef6;--mut:#7c90a5;--dim:#4d6178;
+  --cyan:#3fd0ff;--green:#3ddc97;--red:#ff5c6c;--amber:#ffc247;--blue:#5aa2ff;--teal:#2dd4bf;
+  --fd:'Unbounded',system-ui,sans-serif;--fb:'Manrope',system-ui,sans-serif;--fm:'JetBrains Mono',ui-monospace,monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--tx);font:14px/1.5 var(--fb);min-height:100vh}
+body::after{content:'';position:fixed;inset:0;background:radial-gradient(720px 440px at 10% -8%,rgba(63,208,255,.13),transparent 62%),radial-gradient(660px 420px at 94% 112%,rgba(61,220,151,.09),transparent 62%);pointer-events:none;z-index:0}
+.top{position:relative;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 20px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(13,20,29,.94),rgba(10,16,23,.8));flex-wrap:wrap}
+.brand h1{font:800 17px/1.1 var(--fd)}.brand h1 em{font-style:normal;color:var(--cyan)}
+.brand small{display:block;font:600 9px var(--fm);letter-spacing:.22em;color:var(--mut);margin-top:4px}
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:7px;font:600 10px var(--fm);letter-spacing:.1em;color:var(--mut);border:1px solid var(--line);background:rgba(13,20,29,.6);padding:6px 10px;border-radius:4px}
+.chip b{color:var(--tx)}.chip a{color:var(--cyan);text-decoration:none;font-weight:700}
+.chip a.amber{color:var(--amber)}.chip a.ops{color:var(--teal)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--dim)}.dot.live{background:var(--green);box-shadow:0 0 8px rgba(61,220,151,.6)}.dot.off{background:var(--red)}
+.refresh-bar{position:relative;z-index:2;border-bottom:1px solid var(--line);background:#080d13;padding:10px 20px;display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center}
+.refresh-bar .meta{font:600 10px var(--fm);color:var(--mut);letter-spacing:.08em}
+.refresh-bar .meta b{color:var(--cyan)}
+.pbar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;min-width:180px}
+.pbar>i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--cyan),var(--green));transition:width .4s ease}
+.wrap{position:relative;z-index:2;max-width:1400px;margin:0 auto;padding:18px;display:grid;grid-template-columns:340px 1fr;gap:16px}
+@media(max-width:960px){.wrap{grid-template-columns:1fr}}
+.panel{background:linear-gradient(180deg,var(--p1),var(--p2));border:1px solid var(--line);border-radius:8px}
+.ph{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;border-bottom:1px solid var(--line);font:700 10px var(--fm);letter-spacing:.2em;color:var(--mut)}
+.pb{padding:14px}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}
+.tile{border:1px solid var(--line);border-radius:8px;padding:12px;background:rgba(13,20,29,.5)}
+.tile i{font:600 8.5px var(--fm);letter-spacing:.16em;color:var(--mut);font-style:normal;display:block}
+.tile b{display:block;font:700 20px var(--fd);margin-top:4px;font-variant-numeric:tabular-nums}
+.tile u{text-decoration:none;font:600 9px var(--fm);color:var(--dim)}
+.rail,.col{display:flex;flex-direction:column;gap:16px;min-width:0}
+.drow{display:flex;justify-content:space-between;gap:10px;font:600 11px var(--fm);color:var(--mut);padding:5px 0;border-bottom:1px solid rgba(27,39,53,.5)}
+.drow b{color:var(--tx)}
+.tw{overflow:auto;max-height:280px}
+table{width:100%;border-collapse:collapse;font:500 11px var(--fm)}
+th{position:sticky;top:0;background:#0c141e;color:var(--dim);font:700 9px var(--fm);letter-spacing:.12em;text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+td{padding:6px 10px;border-bottom:1px solid rgba(27,39,53,.55);font-variant-numeric:tabular-nums}
+.pos{color:var(--green)}.neg{color:var(--red)}.mut{color:var(--mut)}
+.opp{display:grid;grid-template-columns:1.5fr .7fr .7fr .7fr .6fr;gap:12px;padding:13px 16px;border-bottom:1px solid var(--line);align-items:start}
+.opp:hover{background:rgba(63,208,255,.035)}
+.opp.fresh{box-shadow:inset 3px 0 0 var(--green)}
+.pair{font:700 14px var(--fd)}.pair small{display:block;font:600 10px var(--fm);color:var(--mut);margin-top:3px}
+.route{font:600 11px var(--fm);color:var(--cyan);margin-top:4px}
+.cell i{display:block;font:600 9px var(--fm);color:var(--mut);letter-spacing:.12em;font-style:normal}
+.cell b{font:700 13px var(--fm)}
+.up{color:var(--green)}
+.hint{font:600 11px var(--fm);color:var(--dim);padding:8px 14px;border-bottom:1px solid var(--line)}
+.empty-art{padding:48px 24px;text-align:center;position:relative;overflow:hidden}
+.empty-art .orb{width:88px;height:88px;margin:0 auto 18px;border-radius:50%;background:radial-gradient(circle at 35% 30%,rgba(63,208,255,.35),transparent 55%),radial-gradient(circle at 70% 70%,rgba(61,220,151,.25),transparent 50%),#0a121c;border:1px solid var(--line2);box-shadow:0 0 40px rgba(63,208,255,.12);animation:orb 4s ease-in-out infinite}
+.empty-art .rings{position:absolute;left:50%;top:54px;width:140px;height:140px;margin-left:-70px;border:1px solid rgba(63,208,255,.12);border-radius:50%;animation:ring 6s linear infinite;pointer-events:none}
+.empty-art h3{font:700 14px var(--fd);letter-spacing:.08em;color:var(--tx);margin-bottom:8px}
+.empty-art p{font:600 11px var(--fm);color:var(--mut);max-width:360px;margin:0 auto;line-height:1.7}
+@keyframes orb{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
+@keyframes ring{to{transform:rotate(360deg)}}
+footer{position:relative;z-index:2;padding:18px;text-align:center;color:var(--dim);font:600 10px var(--fm);border-top:1px solid var(--line);margin-top:20px}
+footer a{color:var(--cyan);text-decoration:none;margin:0 8px}
+.tgl-row{display:flex;justify-content:space-between;align-items:center;font:600 11px var(--fm);color:var(--mut);margin-top:8px}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <h1>MEXC <em>⇄</em> DEX</h1>
+    <small>LIVE · ПРОИЗВОДИТЕЛЬНОСТЬ · ВОЗМОЖНОСТИ</small>
+  </div>
+  <div class="chips">
+    <span class="chip"><i class="dot off" id="statusDot"></i><span id="statusTxt">…</span></span>
+    <span class="chip">FRESH <b id="hFresh">0</b></span>
+    <span class="chip">СИГНАЛЫ <b id="hSig">0</b></span>
+    <span class="chip">СКАН <b id="hScan">—</b></span>
+    <span class="chip"><a class="ops" href="/ops">OPS · АРХИВ ↗</a></span>
+    <span class="chip"><a class="amber" href="/alt-cex">ALT CEX ↗</a></span>
+    <span class="chip"><a href="/dex-dex" style="color:var(--teal)">DEX⇄DEX ↗</a></span>
+  </div>
+</header>
+
+<div class="refresh-bar">
+  <div class="meta">REFRESH ПУЛОВ · <b id="rfPhase">idle</b> · <span id="rfMsg">—</span> · <b id="rfPct">0%</b> (<span id="rfDone">0</span>/<span id="rfTotal">0</span>)</div>
+  <div class="pbar" title="прогресс refresh"><i id="rfBar"></i></div>
+</div>
+
+<main class="wrap">
+  <aside class="rail">
+    <section class="panel">
+      <div class="ph">ПРОИЗВОДИТЕЛЬНОСТЬ</div>
+      <div class="pb">
+        <div class="tiles">
+          <div class="tile"><i>СКАН-ЦИКЛЫ</i><b id="tCyc">0</b><u>avg <span id="tScanMs">—</span></u></div>
+          <div class="tile"><i>МАКС СКАН</i><b id="tScanMax">—</b><u>мс</u></div>
+          <div class="tile"><i>ПУЛЫ КЭШ</i><b id="tPools">0</b><u>БД <span id="tDbPools">0</span></u></div>
+          <div class="tile"><i>REFRESH</i><b id="tRf">0</b><u>avg <span id="tRfMs">—</span></u></div>
+          <div class="tile"><i>ОШИБКИ</i><b class="neg" id="tErr">0</b><u>warn <span id="tWarn">0</span></u></div>
+          <div class="tile"><i>PERF ЗАП.</i><b id="tPerf">0</b></div>
+        </div>
+        <div class="tgl-row"><span>ТОЛЬКО СЕССИЯ</span><label><input type="checkbox" id="tglSession" checked></label></div>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="ph">ЭТАПЫ · AVG MS</div>
+      <div class="pb" id="stageBox"><div class="mut" style="font:600 11px var(--fm)">нет данных</div></div>
+    </section>
+    <section class="panel">
+      <div class="ph">СЕТИ · ПУЛЫ</div>
+      <div class="pb" id="netBox"><div class="mut" style="font:600 11px var(--fm)">—</div></div>
+    </section>
+  </aside>
+
+  <section class="col">
+    <section class="panel">
+      <div class="ph"><span>СЕЙЧАС · LIVE</span><span id="oppMeta">0 FRESH · 0 АКТ.</span></div>
+      <div class="hint">watcher re-quote · FRESH = переквот &lt;30с · архив и логи → OPS</div>
+      <div id="oppList">
+        <div class="empty-art">
+          <div class="rings"></div>
+          <div class="orb"></div>
+          <h3>РАДАР ПУСТ</h3>
+          <p>Живых арбитражных возможностей пока нет. Сканер крутит hot-set и ждёт edge ≥ порога.</p>
+        </div>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="ph"><span>ПОСЛЕДНИЕ PERF</span><span id="perfCount">0</span></div>
+      <div class="tw"><table><thead><tr><th>ЭТАП</th><th>ВРЕМЯ</th><th>МС</th><th>OK</th><th>FAIL</th></tr></thead><tbody id="perfBody"></tbody></table></div>
+    </section>
+  </section>
+</main>
+
+<footer>
+  <a href="/ops">OPS · архив / пулы / логи / БД</a>
+  <a href="/alt-cex">ALT CEX</a>
+  <a href="/dex-dex">DEX ⇄ DEX</a>
+  · read-only monitor
+</footer>
+
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pct=v=>{const x=parseFloat(v);return Number.isFinite(x)?x.toFixed(2)+'%':'—'};
+const usd=v=>{const x=parseFloat(v);if(!Number.isFinite(x))return '—';return Math.abs(x)>=1?'$'+x.toFixed(2):'$'+x.toFixed(4)};
+const fmtN=n=>{const x=Number(n);return Number.isFinite(x)?x.toLocaleString('ru-RU'):'—'};
+const sizeRange=o=>{
+  const mn=parseFloat(o.size_min_usd), mx=parseFloat(o.size_max_usd);
+  const b=parseFloat(o.size_optimal_usd??o.base_amount_usd);
+  if(Number.isFinite(mn)&&Number.isFinite(mx)&&mn>0&&mx>0){
+    if(Math.abs(mx-mn)<0.005) return usd(mn);
+    return usd(mn)+'–'+usd(mx);
+  }
+  return usd(b);
+};
+const S={session:true};
+
+function setOnline(ok){
+  $('statusDot').className='dot '+(ok?'live':'off');
+  $('statusTxt').textContent=ok?'ONLINE':'OFFLINE';
+}
+
+function emptyArt(){
+  return `<div class="empty-art"><div class="rings"></div><div class="orb"></div>
+    <h3>РАДАР ПУСТ</h3>
+    <p>Живых арбитражных возможностей пока нет. Сканер крутит hot-set и ждёт edge ≥ порога.</p></div>`;
+}
+
+function applyRefresh(rf){
+  if(!rf)return;
+  const pctV=Number(rf.pct)||0;
+  $('rfPhase').textContent=rf.phase||'idle';
+  $('rfMsg').textContent=rf.message||'—';
+  $('rfPct').textContent=pctV.toFixed(1)+'%';
+  $('rfDone').textContent=rf.done??0;
+  $('rfTotal').textContent=rf.total??0;
+  $('rfBar').style.width=Math.max(0,Math.min(100,pctV))+'%';
+  $('rfBar').style.opacity=rf.running?1:.45;
+}
+
+async function loadSummary(){
+  try{
+    const r=await fetch('/api/summary?session_only='+S.session);if(!r.ok)throw 0;
+    const s=await r.json();
+    setOnline(true);
+    $('hSig').textContent=s.signals_total||0;
+    $('tCyc').textContent=s.scanner_cycles||0;
+    $('tScanMs').textContent=(s.avg_scan_ms?fmtN(s.avg_scan_ms)+' мс':'—');
+    $('hScan').textContent=s.avg_scan_ms?fmtN(s.avg_scan_ms)+'мс':'—';
+    $('tScanMax').textContent=s.max_scan_ms?fmtN(s.max_scan_ms):'—';
+    $('tPools').textContent=s.pools_cached||0;
+    $('tDbPools').textContent=s.db_pools||0;
+    $('tRf').textContent=s.refresh_cycles||0;
+    $('tRfMs').textContent=s.avg_refresh_ms?fmtN(s.avg_refresh_ms)+' мс':'—';
+    $('tErr').textContent=s.errors||0;
+    $('tWarn').textContent=s.warnings||0;
+    $('tPerf').textContent=s.perf_records||0;
+    applyRefresh(s.refresh);
+    const stages=s.stage_stats||{};
+    const sk=Object.keys(stages);
+    $('stageBox').innerHTML=sk.length?sk.slice(0,12).map(k=>{
+      const v=stages[k];
+      return `<div class="drow"><span>${esc(k)}</span><b>${fmtN(v.avg_ms)} · n=${v.count}</b></div>`;
+    }).join(''):'<div class="mut" style="font:600 11px var(--fm)">нет данных</div>';
+    const nets=s.pool_net_dist||{};
+    $('netBox').innerHTML=Object.keys(nets).length?Object.entries(nets).map(([k,v])=>
+      `<div class="drow"><span>${esc(k)}</span><b>${v}</b></div>`).join(''):'<div class="mut" style="font:600 11px var(--fm)">—</div>';
+  }catch(_){setOnline(false)}
+}
+
+async function loadRefresh(){
+  try{
+    const r=await fetch('/api/refresh_status');if(!r.ok)return;
+    applyRefresh(await r.json());
+  }catch(_){}
+}
+
+async function loadOpps(){
+  try{
+    const r=await fetch('/api/opportunities');if(!r.ok)return;
+    const d=await r.json();
+    const opps=d.opportunities||[];
+    $('hFresh').textContent=d.fresh_count||0;
+    $('oppMeta').textContent=`${d.fresh_count||0} FRESH · ${d.count||0} АКТ.`;
+    if(!opps.length){$('oppList').innerHTML=emptyArt();return}
+    const ordered=[...opps].sort((a,b)=>(b.fresh?1:0)-(a.fresh?1:0)||(parseFloat(b.net_profit_pct)||0)-(parseFloat(a.net_profit_pct)||0));
+    $('oppList').innerHTML=ordered.slice(0,40).map(o=>{
+      const np=parseFloat(o.net_profit_pct);
+      return `<div class="opp${o.fresh?' fresh':''}">
+        <div><div class="pair">${esc(o.token_coin||'?')}<small>${o.fresh?'● СЕЙЧАС':'переквот '+fmtN(o.requote_age_sec)+'с'}</small></div>
+        <div class="route">${esc(o.network||'')} · ${esc(o.direction||'')} · ${esc(o.dex||'')}</div></div>
+        <div class="cell"><i>SIZE</i><b title="${esc(usd(o.size_optimal_usd||o.base_amount_usd))+' opt'}">${sizeRange(o)}</b></div>
+        <div class="cell"><i>NET</i><b class="up">${pct(o.net_profit_pct)}</b></div>
+        <div class="cell"><i>СТАРТ</i><b>${pct(o.initial_net_profit_pct)}</b></div>
+        <div class="cell"><i>AGE</i><b>${fmtN(o.age_sec)}с</b></div>
+      </div>`;
+    }).join('');
+  }catch(_){}
+}
+
+async function loadPerf(){
+  try{
+    const r=await fetch('/api/performance?limit=80');if(!r.ok)return;
+    const d=await r.json();
+    $('perfCount').textContent=fmtN(d.count);
+    $('perfBody').innerHTML=(d.records||[]).map(p=>{
+      const t=p.started_at==null?'—':(typeof p.started_at==='number'?new Date(p.started_at*1000).toTimeString().slice(0,8):String(p.started_at).slice(11,19));
+      return `<tr><td>${esc(p.stage)}</td><td class="mut">${t}</td><td>${fmtN(p.duration_ms)}</td>
+        <td class="pos">${fmtN(p.items_success)}</td><td class="${p.items_failed?'neg':'mut'}">${fmtN(p.items_failed)}</td></tr>`;
+    }).join('')||'<tr><td colspan="5" class="mut">нет записей</td></tr>';
+  }catch(_){}
+}
+
+$('tglSession').onchange=e=>{S.session=e.target.checked;loadSummary()};
+
+loadSummary();loadOpps();loadPerf();loadRefresh();
+setInterval(loadSummary,4000);
+setInterval(loadOpps,5000);
+setInterval(loadPerf,8000);
+setInterval(loadRefresh,1500);
+</script>
+</body>
+</html>

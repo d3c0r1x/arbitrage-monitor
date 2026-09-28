@@ -1,0 +1,16 @@
+{
+  "name": "pcs-sidecar",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Read-only PancakeSwap Smart Router + Price API sidecar for the Python arb bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "smoke": "node smoke.js"
+  },
+  "dependencies": {
+    "@pancakeswap/smart-router": "7.5.4",
+    "viem": "2.31.3"
+  }
+}
