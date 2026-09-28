@@ -1,79 +1,289 @@
 # MEXC × DEX Arbitrage Monitor
 
-**Asynchronous monitor for cross-market and cross-DEX arbitrage opportunities.**
+> **Интересный личный проект, над которым я работал длительное время.** Я постепенно развивал его от простого сканера возможностей до V6-системы с MEXC, EVM/DEX, подбором размера сделки, watcher, dashboard, cross-DEX и multi-hop сценариями.
+>
+> **Status:** active research / monitoring project.
+>
+> ⚠️ Это исследовательский мониторинг, а не обещание доходности. По умолчанию execution выключен.
 
-The repository documents an iterative V1 → V6 development path. The current version is **V6**.
+## Задача
 
-> Default mode is monitoring only. Trade execution is opt-in and defaults to dry-run.
+Проверять, существует ли реальная арбитражная возможность между CEX и DEX или между несколькими DEX после учёта:
 
-## What it does
+- цены;
+- liquidity;
+- taker fees;
+- pool fees;
+- slippage;
+- gas;
+- размера сделки;
+- особенностей конкретного маршрута.
 
-- discovers token/pool opportunities across MEXC and on-chain DEXs;
-- obtains on-chain swap quotes;
-- accounts for fees and slippage;
-- sweeps trade sizes to find the better-sized opportunity;
-- produces signals and watches them over time;
-- supports cross-DEX and multi-hop scans;
-- exposes a web dashboard and operational status.
+Простой вопрос:
 
-## Architecture
+> «Цена на DEX ниже, чем на бирже?»
+
+не является достаточным.
+
+Правильный вопрос:
+
+> «Сколько получится получить на полном маршруте для конкретного размера после всех расходов?»
+
+## Текущая версия
+
+Основной код — в [V6](V6/).
+
+Поддерживаются:
+
+- MEXC ↔ DEX;
+- DEX ↔ DEX;
+- cross-DEX;
+- multi-hop;
+- live watcher;
+- web dashboard;
+- SQLite state;
+- audit tools.
+
+Репозиторий сохраняет историю V1 → V6, чтобы видеть эволюцию системы.
+
+## Архитектура
 
 ```
 market/token sources
-      ↓
+       ↓
 pool discovery
-      ↓
-on-chain quotes
-      ↓
+       ↓
+on-chain quote
+       ↓
 fees + slippage + size sweep
-      ↓
+       ↓
 net profitability
-      ↓
+       ↓
 signal / watcher
-      ↓
-web dashboard
+       ↓
+dashboard
 ```
 
-## Engineering highlights
+## Ключевой engineering case — размер сделки
 
-**Multiple market models.** Supports CEX order-book data and AMM-style DEX pricing.
+Для одной и той же пары проект пробует несколько размеров:
 
-**Size matters.** The monitor does not treat the displayed price as the trade result; it checks different trade sizes and incorporates execution costs.
+```
+$10
+$25
+$50
+$100
+$250
+$500
+```
 
-**Fail-closed behaviour.** Configuration and numeric metadata are validated before a signal is trusted.
+Результат может быть таким:
 
-**Operational safety.** Circuit breakers, blacklists and dry-run defaults reduce the chance that an operational problem becomes a live trade.
+- маленький размер выгоден;
+- большой размер съедает прибыль slippage;
+- оптимальный размер находится между ними.
 
-## Current scope
+Это важнее, чем смотреть только на spot/mid price.
 
-V6 covers MEXC↔DEX, DEX↔DEX, cross-DEX and multi-hop monitoring. The repository contains dedicated versions, review notes and tests so the evolution of the system can be inspected rather than inferred from a single final snapshot.
+## PnL pipeline
 
-## Stack
+Текущая V6 считает результат примерно так:
 
-Python 3.12 · async IO · Web3/EVM · MEXC API · Uniswap/PancakeSwap/Aerodrome · pytest · web dashboard
+1. получить quote;
+2. обработать направление A/B;
+3. учесть withdrawal/bridge related costs, где применимо;
+4. добавить gas + taker + slippage costs;
+5. посчитать mid net;
+6. при достаточном headroom проверить orderbook;
+7. записать hard signal;
+8. watcher повторяет тот же pipeline на live requote.
 
-## Tests
+Подробная реализация документирована внутри [V6](V6/).
 
-The V6 snapshot contains **40 test files**. Earlier versions have their own test suites.
-
-## Security notes
-
-Credentials are supplied through environment variables and excluded from the repository. Historical development credentials were revoked and redacted; the current repository does not contain live keys.
-
-## Local run
+## Быстрый запуск
 
 ```bash
 cd V6
 python -m venv .venv
-# Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-python main.py
 ```
 
-## Limitations
+Windows:
 
-This is a monitoring/research project, not a guaranteed profitable trading system. Execution depends on network conditions, liquidity, fees, latency and external APIs. Signals are estimates and can become stale.
+```bat
+.venv\Scripts\activate
+```
+
+Установка:
+
+```bash
+pip install -r requirements.txt
+```
+
+Dashboard:
+
+```bash
+python main.py
+python run_dashboard.py --host 127.0.0.1 --port 8000
+```
+
+Открыть:
+
+```
+http://127.0.0.1:8000
+```
+
+## Безопасный режим
+
+Без `DEX_PRIVATE_KEY`:
+
+- execution отключён;
+- работает мониторинг.
+
+С ключом, но:
+
+```
+EXECUTION_DRY_RUN=1
+```
+
+система должна оставаться в dry-run/eth_call режиме без broadcast.
+
+Дополнительные safety settings:
+
+- gas cap;
+- slippage cap;
+- daily loss limit;
+- kill switch;
+- re-quote;
+- blacklists / circuit breakers.
+
+## Режимы сканирования
+
+Runtime mode:
+
+```
+mexc
+dex_dex
+```
+
+MEXC mode:
+
+- MEXC ↔ DEX edges;
+- pool refresh;
+- signals в `data/signals.jsonl`.
+
+DEX-DEX mode:
+
+- cross-DEX / chain opportunities;
+- `data/dex_dex_signals.jsonl`.
+
+## Сети и DEX
+
+V6 работает с активными EVM-сетями, среди которых:
+
+- BSC;
+- Ethereum;
+- Arbitrum;
+- Base;
+- Polygon.
+
+В registry присутствуют Uniswap, PancakeSwap, Aerodrome и другие адаптеры.
+
+Точное состояние registry смотрите в `config/`.
+
+## Конфигурация
+
+Основные env:
+
+| Переменная | Смысл |
+|---|---|
+| `MEXC_API_KEY` / `MEXC_API_SECRET` | MEXC |
+| `ALCHEMY_KEY*` | RPC |
+| `INFURA_KEY` / `DRPC_KEY` | RPC |
+| `*_RPC_URL` | прямые RPC |
+| `DEX_PRIVATE_KEY` | execution key |
+| `MIN_NET_PROFIT_PCT` | hard-signal threshold |
+| `WATCHER_MIN_PROFIT_PCT` | watcher threshold |
+| `SCAN_INTERVAL_SEC` | interval |
+| `SCANNER_MAX_CONCURRENCY` | parallelism |
+| `RPC_MAX_CONCURRENCY` | RPC parallelism |
+| `SIZE_SWEEP_USD` | sizes |
+| `EXECUTION_DRY_RUN` | dry run |
+| `EXECUTION_SLIPPAGE_BPS` | execution slippage |
+| `DAILY_LOSS_LIMIT_USD` | daily loss cap |
+
+Все настройки загружаются из `.env`.
+
+## Важные данные в data/
+
+```
+data/
+  pools_cache.json
+  dex_dex_pools_cache.json
+  scan_mode.json
+  signals.jsonl
+  opportunities_live.json
+  signals_archive.jsonl
+  performance.jsonl
+  refresh_status.json
+  hot_pools.json
+  state/active.sqlite3
+  KILL_SWITCH
+```
+
+Это runtime data, а не конфигурация, которую следует коммитить целиком.
+
+## Dashboard
+
+Основные страницы:
+
+| URL | Содержание |
+|---|---|
+| `/` | MEXC⇄DEX LIVE |
+| `/dex-dex` | DEX↔DEX radar |
+| `/ops` | operational data |
+| `/alt-cex` | optional alt-DEX/CEX view |
+
+API включает summary, opportunities, signals, scan mode, diagnostics, performance и health.
+
+## Тесты и инструменты
+
+Unit tests:
+
+```bash
+pytest -m "not integration" -q
+```
+
+Useful tools:
+
+```bash
+python tools/audit_pnl_real.py
+python tools/bench_pcs_vs_bot.py
+```
+
+V6 содержит **40 test files**; старые версии имеют свои наборы проверок.
+
+## Security
+
+Секреты должны жить в environment variables.
+
+Execution deliberately disabled by default.
+
+Исторические credentials были отозваны и не должны использоваться как действующие.
+
+## Ограничения
+
+- ликвидность и цены изменяются каждую секунду;
+- RPC/API имеют rate limits;
+- сигналы могут устаревать;
+- сеть, gas, MEV и execution latency влияют на реальный результат;
+- мониторинг не гарантирует прибыль.
 
 ## AI-assisted development
 
-AI was used for implementation drafts, routine modules and test ideas. I owned the decomposition, architecture, review decisions, debugging, validation and final behaviour.
+AI использовался как ускоритель для черновой реализации, рутинных модулей и тестовых идей.
+
+Я отвечал за decomposition, архитектуру, review решений, debugging, validation и итоговое поведение системы.
+
+## Лицензия
+
+MIT.
